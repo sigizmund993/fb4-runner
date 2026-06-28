@@ -1,0 +1,6 @@
+venv
+.vscode
+.mimocode
+.claude
+__pycache__
+*.log
