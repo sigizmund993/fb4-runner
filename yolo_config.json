@@ -1,5 +1,0 @@
-{
-    "detection_threshold": 0.25,
-    "max_boxes": 100,
-    "labels": ["Ball"]
-}
