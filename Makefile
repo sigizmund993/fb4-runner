@@ -42,14 +42,12 @@ install-driver:
 	# sudo apt install hailort-pcie-driver=4.23.0
 
 install-mediamtx:
-	# Скачать mediaMTX (RTSP сервер)
 	cd /root && \
-		LATEST=$$(curl -sI https://github.com/bluenviron/mediamtx/releases/latest \
-			| grep location | grep -o 'v[0-9.]*' | tr -d '\r') && \
-		wget -q "https://github.com/bluenviron/mediamtx/releases/download/$${LATEST}/mediamtx_$${LATEST}_linux_arm64.tar.gz" && \
-		tar -xzf mediamtx_$${LATEST}_linux_arm64.tar.gz && \
-		rm mediamtx_$${LATEST}_linux_arm64.tar.gz
-	cp mediamtx.yml /root/mediamtx.yml
+	LATEST=$$(curl -s https://github.com | grep -oP '"tag_name": "\K[^"]+') && \
+	wget -q "https://github.com{LATEST}/mediamtx_$${LATEST}_linux_arm64.tar.gz" && \
+	tar -xzf mediamtx_$${LATEST}_linux_arm64.tar.gz && \
+	rm mediamtx_$${LATEST}_linux_arm64.tar.gz
+
 
 install: install-deps install-driver install-mediamtx
 
@@ -77,19 +75,6 @@ check:
 # ---------------------------------------------------------------------------
 # Сборка
 # ---------------------------------------------------------------------------
-compile:
-	# Постпроцессинг .so (YOLO26n decode + NMS + консоль)
-	g++ -shared -fPIC -O3 \
-		-I/usr/include/hailo \
-		-I/usr/include/hailo/tappas \
-		yolo26_post.cpp -o libyolo26_post.so -lpthread
-	# C++ детектор (опционально)
-	g++ -std=c++17 -O2 \
-		$$(pkg-config --cflags opencv4) \
-		main.cpp -o ball_detector_cpp \
-		$$(pkg-config --libs opencv4) \
-		-L/usr/lib/aarch64-linux-gnu -lhailort -lpthread
-
 compile-so:
 	# Только .so (быстро, без opencv)
 	g++ -shared -fPIC -O3 \
@@ -101,25 +86,19 @@ compile-so:
 # Запуск
 # ---------------------------------------------------------------------------
 run:
+	@trap 'kill 0' SIGINT; \
+	./run.sh --no-stream > /dev/null& \
+	sleep 1;\
+	./venv/bin/python main.py & \
+	wait
+run-gstreamer:
 	# GStreamer pipeline без стрима — только консольный вывод
 	./run.sh --no-stream $(HEF) $(SO)
 
-run-stream:
+run-gstreamer-stream:
 	# GStreamer pipeline + RTSP MJPEG стрим через mediaMTX
 	# Смотреть: rtsp://<IP>:8554/ball
 	MEDIAMTX_BIN=$(MEDIAMTX) ./run.sh $(HEF) $(SO)
-
-run-stream-hq:
-	# Высокое качество JPEG
-	MEDIAMTX_BIN=$(MEDIAMTX) ./run.sh --quality=90 $(HEF) $(SO)
-
-run-python:
-	# Старый Python детектор (запасной вариант, с MJPEG HTTP)
-	python3 detect.py --model $(HEF) --so $(SO)
-
-run-cpp:
-	# Старый C++ детектор
-	LD_LIBRARY_PATH=/usr/lib:/usr/lib/aarch64-linux-gnu ./ball_detector_cpp
 
 # ---------------------------------------------------------------------------
 # Отладка

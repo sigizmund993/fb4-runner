@@ -9,3 +9,4 @@ datastream
 metadata
 *.crt
 *.key
+*.so

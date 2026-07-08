@@ -1,22 +1,13 @@
-/**
- * yolo26_post.cpp — YOLO26n postprocessing for hailofilter
- *
- * Does:
- *   1. Decode all grid cells above conf_threshold (sigmoid + dequant)
- *   2. NMS to suppress duplicates
- *   3. Write best detection to HailoROI (for hailooverlay)
- *   4. Print best detection to stderr (console)
- *
- * Compiled as shared library, called by GStreamer hailofilter element.
- * No Python involved.
- */
-
 #include <vector>
 #include <cmath>
 #include <string>
 #include <cstdio>
 #include <algorithm>
 #include <chrono>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <cstdint>
 
 #include "hailo_objects.hpp"
 #include "hailo_tensors.hpp"
@@ -40,6 +31,13 @@ static const char* REG_NAMES[3] = {
 
 static const float CONF_THRESHOLD = 0.25f;
 static const float IOU_THRESHOLD  = 0.45f;
+
+static const char* SHM_NAME = "/ball_shm"; // Имя должно начинаться с косой черты '/'
+struct SharedCoords {
+    uint16_t cx;
+    uint16_t cy;
+};
+static SharedCoords* s_shm_ptr = nullptr; 
 
 // ---------------------------------------------------------------------------
 inline float sigmoid(float x) {
@@ -68,7 +66,6 @@ static float iou(const Det& a, const Det& b) {
 }
 
 static std::vector<Det> nms(std::vector<Det>& dets, float iou_thr) {
-    // sort descending by conf
     std::sort(dets.begin(), dets.end(),
               [](const Det& a, const Det& b){ return a.conf > b.conf; });
 
@@ -87,15 +84,50 @@ static std::vector<Det> nms(std::vector<Det>& dets, float iou_thr) {
 }
 
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // Frame counter + FPS tracking (static — persists across calls)
 // ---------------------------------------------------------------------------
 static uint64_t s_frame_count = 0;
 static float    s_fps         = 0.0f;
 static auto     s_fps_ts      = std::chrono::steady_clock::now();
 
+static void init_shared_memory() {
+    // Открываем/создаем сегмент памяти
+    int fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    if (fd == -1) {
+        perror("[yolo26 SHM] shm_open failed");
+        return;
+    }
+
+    // Задаем размер (4 байта под структуру)
+    if (ftruncate(fd, sizeof(SharedCoords)) == -1) {
+        perror("[yolo26 SHM] ftruncate failed");
+        close(fd);
+        return;
+    }
+
+    // Отображаем в память процесса
+    void* ptr = mmap(nullptr, sizeof(SharedCoords), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd); // Дескриптор больше не нужен
+
+    if (ptr == MAP_FAILED) {
+        perror("[yolo26 SHM] mmap failed");
+        return;
+    }
+
+    s_shm_ptr = static_cast<SharedCoords*>(ptr);
+    
+    // Инициализируем дефолтными значениями (вне диапазона)
+    s_shm_ptr->cx = static_cast<uint16_t>(INPUT_W + 1);
+    s_shm_ptr->cy = static_cast<uint16_t>(INPUT_H + 1);
+}
+
 extern "C" void filter(HailoROIPtr roi, void* /*extra_param*/) {
     auto t0 = std::chrono::steady_clock::now();
+
+    // Ленивая инициализация SHM при первом кадре
+    if (!s_shm_ptr) {
+        init_shared_memory();
+    }
 
     if (!roi) return;
 
@@ -160,7 +192,11 @@ extern "C" void filter(HailoROIPtr roi, void* /*extra_param*/) {
     }
 
     if (raw.empty()) {
-        fprintf(stderr, "[yolo26] no detections\n");
+        if (s_shm_ptr) {
+            s_shm_ptr->cx = static_cast<uint16_t>(INPUT_W + 1);
+            s_shm_ptr->cy = static_cast<uint16_t>(INPUT_H + 1);
+        }
+        // fprintf(stderr, "[yolo26] no detections\n");
         return;
     }
 
@@ -168,12 +204,10 @@ extern "C" void filter(HailoROIPtr roi, void* /*extra_param*/) {
     std::vector<Det> kept = nms(raw, IOU_THRESHOLD);
 
     // --- Write to HailoROI (for hailooverlay) ---
-    // Only best detection — draw crosshair via overlay
     const Det& best = kept[0];
     float norm_cx = (best.x1 + best.x2) * 0.5f / INPUT_W;
     float norm_cy = (best.y1 + best.y2) * 0.5f / INPUT_H;
-    // tiny 1px box at center — hailooverlay will draw it
-    float dot = 1.0f / INPUT_W;
+    float dot = 3.0f / INPUT_W;
     roi->add_object(std::make_shared<HailoDetection>(
         HailoBBox(norm_cx - dot, norm_cy - dot, dot*2, dot*2),
         0, "ball", best.conf
@@ -191,14 +225,22 @@ extern "C" void filter(HailoROIPtr roi, void* /*extra_param*/) {
         s_fps_ts = t1;
     }
 
-    // --- Console output ---
+    // --- Расчет центра и запись в Shared Memory ---
     float cx_px = (best.x1 + best.x2) * 0.5f;
     float cy_px = (best.y1 + best.y2) * 0.5f;
-    fprintf(stderr,
-        "[yolo26] frame=%5.1ffps  post=%5.2fms  "
-        "dets=%zu  best=%.1f%%  center=(%.0f,%.0f)\n",
-        s_fps, post_ms,
-        kept.size(), best.conf * 100.0f,
-        cx_px, cy_px
-    );
+
+    if (s_shm_ptr) {
+        // Округляем до ближайшего целого и кастим в uint16_t
+        s_shm_ptr->cx = static_cast<uint16_t>(std::round(cx_px));
+        s_shm_ptr->cy = static_cast<uint16_t>(std::round(cy_px));
+    }
+
+    // --- Console output ---
+    // fprintf(stderr,
+    //     "[yolo26] frame=%5.1ffps  post=%5.2fms  "
+    //     "dets=%zu  best=%.1f%%  center=(%.0f,%.0f)\n",
+    //     s_fps, post_ms,
+    //     kept.size(), best.conf * 100.0f,
+    //     cx_px, cy_px
+    // );
 }

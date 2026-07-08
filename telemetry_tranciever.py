@@ -7,6 +7,7 @@ def telemetry_tranciever():
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     while True:
         if ser.in_waiting > 0:
-            packet = ser.readline() 
-            if packet:
-                sock.sendto(packet, ("<broadcast>", config.TEL_PORT))
+            packet = ser.readline()
+            print(packet) 
+            # if packet:
+            #     sock.sendto(packet, ("<broadcast>", config.TEL_PORT))
