@@ -4,3 +4,8 @@ venv
 .claude
 __pycache__
 *.log
+*.hef
+datastream
+metadata
+*.crt
+*.key
