@@ -1,30 +1,142 @@
-init:
-	git submodule update --init --recursive
-	cd ssl_packet_package && make init && make build
-	python3 -m venv venv --system-site-packages
-	./venv/bin/pip install -r ./requirements.txt
-	sudo dpkg -i packages/hailort-pcie-driver_4.24.0_all.deb
-	sudo dpkg -i packages/hailort_4.24.0_arm64.deb
-	./venv/bin/pip install packages/hailort-4.24.0-cp31X-cp31X-linux_aarch64.whl
+SHELL := /bin/bash
 
+HEF     ?= ./10_hours_brainrot.hef
+SO      ?= ./libyolo26_post.so
+MEDIAMTX ?= /root/mediamtx
+MEDIAMTX_CFG ?= /root/mediamtx.yml
+
+# ---------------------------------------------------------------------------
+# Установка всего стека (только то что реально нужно)
+# ---------------------------------------------------------------------------
+install-deps:
+	# GStreamer + libcamera
+	sudo apt install -y \
+		gstreamer1.0-libcamera \
+		gstreamer1.0-plugins-bad \
+		gstreamer1.0-plugins-good \
+		gstreamer1.0-plugins-ugly \
+		gstreamer1.0-tools \
+		gstreamer1.0-rtsp \
+		python3-gi \
+		python3-picamera2
+	# Hailo TAPPAS (GStreamer плагины hailonet, hailofilter, hailooverlay)
+	sudo apt install -y hailo-tappas-core python3-hailo-tappas
+
+install-driver:
+	# Kernel headers для сборки PCIe драйвера
+	sudo apt install -y \
+		linux-headers-$$(uname -r)-common-rpi \
+		linux-headers-$$(uname -r)-rpi-2712 2>/dev/null || \
+	sudo apt install -y \
+		linux-headers-$$(uname -r | sed 's/+rpt.*//')+rpt-common-rpi \
+		linux-headers-$$(uname -r)
+	# Сборка и установка драйвера Hailo PCIe
+	cd /usr/src/hailort-pcie-driver/hailort/drivers/linux/pcie && \
+		sudo make -C /lib/modules/$$(uname -r)/build M=$$(pwd) modules && \
+		sudo make -C /lib/modules/$$(uname -r)/build M=$$(pwd) modules_install && \
+		sudo depmod -a && \
+		sudo cp 51-hailo-udev.rules /etc/udev/rules.d/ && \
+		sudo udevadm control --reload-rules
+	sudo modprobe hailo_pci
+	# Откат драйвера до версии библиотеки (4.23.0) если нужно
+	# sudo apt install hailort-pcie-driver=4.23.0
+
+install-mediamtx:
+	# Скачать mediaMTX (RTSP сервер)
+	cd /root && \
+		LATEST=$$(curl -sI https://github.com/bluenviron/mediamtx/releases/latest \
+			| grep location | grep -o 'v[0-9.]*' | tr -d '\r') && \
+		wget -q "https://github.com/bluenviron/mediamtx/releases/download/$${LATEST}/mediamtx_$${LATEST}_linux_arm64.tar.gz" && \
+		tar -xzf mediamtx_$${LATEST}_linux_arm64.tar.gz && \
+		rm mediamtx_$${LATEST}_linux_arm64.tar.gz
+	cp mediamtx.yml /root/mediamtx.yml
+
+install: install-deps install-driver install-mediamtx
+
+# ---------------------------------------------------------------------------
+# Проверка что всё работает
+# ---------------------------------------------------------------------------
+check:
+	@echo "=== Hailo device ==="
+	hailortcli fw-control identify
+	@echo ""
+	@echo "=== GStreamer Hailo plugins ==="
+	@gst-inspect-1.0 hailonet   2>&1 | head -2
+	@gst-inspect-1.0 hailofilter 2>&1 | head -2
+	@gst-inspect-1.0 hailooverlay 2>&1 | head -2
+	@gst-inspect-1.0 libcamerasrc 2>&1 | head -2
+	@gst-inspect-1.0 jpegenc      2>&1 | head -2
+	@gst-inspect-1.0 rtpjpegpay   2>&1 | head -2
+	@echo ""
+	@echo "=== Camera ==="
+	rpicam-hello --list-cameras 2>&1 | head -5
+	@echo ""
+	@echo "=== Driver ==="
+	ls -la /dev/hailo*
+
+# ---------------------------------------------------------------------------
+# Сборка
+# ---------------------------------------------------------------------------
 compile:
+	# Постпроцессинг .so (YOLO26n decode + NMS + консоль)
 	g++ -shared -fPIC -O3 \
 		-I/usr/include/hailo \
 		-I/usr/include/hailo/tappas \
 		yolo26_post.cpp -o libyolo26_post.so -lpthread
+	# C++ детектор (опционально)
 	g++ -std=c++17 -O2 \
 		$$(pkg-config --cflags opencv4) \
 		main.cpp -o ball_detector_cpp \
 		$$(pkg-config --libs opencv4) \
 		-L/usr/lib/aarch64-linux-gnu -lhailort -lpthread
 
+compile-so:
+	# Только .so (быстро, без opencv)
+	g++ -shared -fPIC -O3 \
+		-I/usr/include/hailo \
+		-I/usr/include/hailo/tappas \
+		yolo26_post.cpp -o libyolo26_post.so -lpthread
+
+# ---------------------------------------------------------------------------
+# Запуск
+# ---------------------------------------------------------------------------
 run:
+	# GStreamer pipeline без стрима — только консольный вывод
+	./run.sh --no-stream $(HEF) $(SO)
+
+run-stream:
+	# GStreamer pipeline + RTSP MJPEG стрим через mediaMTX
+	# Смотреть: rtsp://<IP>:8554/ball
+	MEDIAMTX_BIN=$(MEDIAMTX) ./run.sh $(HEF) $(SO)
+
+run-stream-hq:
+	# Высокое качество JPEG
+	MEDIAMTX_BIN=$(MEDIAMTX) ./run.sh --quality=90 $(HEF) $(SO)
+
+run-python:
+	# Старый Python детектор (запасной вариант, с MJPEG HTTP)
+	python3 detect.py --model $(HEF) --so $(SO)
+
+run-cpp:
+	# Старый C++ детектор
 	LD_LIBRARY_PATH=/usr/lib:/usr/lib/aarch64-linux-gnu ./ball_detector_cpp
 
-run-detect:
-	./venv/bin/python3 detect_coords.py
+# ---------------------------------------------------------------------------
+# Отладка
+# ---------------------------------------------------------------------------
+debug-pipeline:
+	# Запуск с GStreamer tracers — показывает время каждого элемента
+	GST_TRACERS="proctime;framerate" GST_DEBUG="GST_TRACER:7" \
+		./run.sh --no-stream $(HEF) $(SO) 2>&1 | grep -E "proctime|framerate|hailonet|hailofilter"
 
-run-gstreamer:
-	./venv/bin/python3 detect_coords.py
+debug-camera:
+	# Проверка камеры без inference
+	gst-launch-1.0 libcamerasrc ! \
+		videoconvert ! \
+		"video/x-raw,format=RGB,width=1296,height=972,framerate=30/1" ! \
+		fakesink sync=false
 
-.PHONY: init compile run run-detect run-gstreamer
+.PHONY: install install-deps install-driver install-mediamtx \
+        check compile compile-so \
+        run run-stream run-stream-hq run-python run-cpp \
+        debug-pipeline debug-camera
