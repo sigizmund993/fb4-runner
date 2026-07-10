@@ -2,3 +2,4 @@ pyzmq
 pyserial
 numpy
 protobuf
+opencv-python

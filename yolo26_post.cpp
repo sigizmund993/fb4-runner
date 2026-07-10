@@ -205,13 +205,20 @@ extern "C" void filter(HailoROIPtr roi, void* /*extra_param*/) {
 
     // --- Write to HailoROI (for hailooverlay) ---
     const Det& best = kept[0];
-    float norm_cx = (best.x1 + best.x2) * 0.5f / INPUT_W;
-    float norm_cy = (best.y1 + best.y2) * 0.5f / INPUT_H;
-    float dot = 3.0f / INPUT_W;
+
+    // Находим нормализованные координаты верхнего левого угла
+    float norm_xmin = best.x1 / INPUT_W;
+    float norm_ymin = best.y1 / INPUT_H;
+
+    // Находим нормализованные ширину и высоту bounding box'а
+    float norm_w = (best.x2 - best.x1) / INPUT_W;
+    float norm_h = (best.y2 - best.y1) / INPUT_H;
+
     roi->add_object(std::make_shared<HailoDetection>(
-        HailoBBox(norm_cx - dot, norm_cy - dot, dot*2, dot*2),
+        HailoBBox(norm_xmin, norm_ymin, norm_w, norm_h),
         0, "ball", best.conf
     ));
+
 
     // --- Timing end + FPS ---
     auto t1 = std::chrono::steady_clock::now();

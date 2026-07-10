@@ -34,6 +34,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+PREFIX=""
+
 if [ "$STREAM" -eq 1 ]; then
     echo "[INFO] Starting mediaMTX..."
     "$MEDIAMTX" "$MEDIAMTX_CFG" &
@@ -43,13 +45,15 @@ if [ "$STREAM" -eq 1 ]; then
     IP=$(hostname -I | awk '{print $1}')
     echo "[INFO] Stream: rtsp://${IP}:8554/ball"
 
-    # GStreamer пушит MJPEG в mediaMTX через RTSP RECORD
+    PREFIX="rtspclientsink name=sink location=rtsp://127.0.0.1:8554/ball protocols=tcp latency=0"
+
     SINK="queue leaky=downstream max-size-buffers=2 ! \
 hailooverlay ! \
 videoconvert ! \
+video/x-raw,format=I420 ! \
 jpegenc quality=${QUALITY} ! \
-rtpjpegpay ! \
-rtspclientsink location=rtsp://127.0.0.1:8554/ball protocols=tcp"
+queue leaky=downstream max-size-buffers=2 ! \
+sink."
 else
     SINK="fakesink sync=false"
     echo "[INFO] No-stream mode — console only"
@@ -61,6 +65,7 @@ echo "[INFO] Quality: $QUALITY"
 echo ""
 
 gst-launch-1.0 -e \
+    $PREFIX \
     libcamerasrc ! \
     videoconvert ! \
     "video/x-raw,format=RGB,width=1296,height=972,framerate=30/1" ! \

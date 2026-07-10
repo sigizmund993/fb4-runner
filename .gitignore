@@ -10,3 +10,4 @@ metadata
 *.crt
 *.key
 *.so
+gstshark*
