@@ -23,16 +23,16 @@ def main():
     # )
 
     command_p.start()
-    telemetry_p.start()
+    # telemetry_p.start()
     # dashboard_p.start()
 
     try:
         command_p.join()
-        telemetry_p.join()
+        # telemetry_p.join()
         # dashboard_p.join()
     except KeyboardInterrupt:
         command_p.terminate()
-        telemetry_p.terminate()
+        # telemetry_p.terminate()
         # dashboard_p.terminate()
 
 if __name__ == '__main__':

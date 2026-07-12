@@ -15,34 +15,44 @@ def command_reciever():
     ser = serial.Serial(config.UART_PORT, config.BAUD_RATE)
     coord_converter = CoordConverter("to_real_coords/camera_params_fisheye.npz","to_real_coords/homography_matrix.npy")
     while True:
-        raw_bytes = shm.buf[:4]
-        cx, cy = struct.unpack("HH", raw_bytes)#Ye
-        if cx == 1281 and cy == 961:
-            print(f"Мяч не найден")
-        else:
-            real_coords = coord_converter.get_coords(cx,cy)
-            print("real coords: ",real_coords)
+        # raw_bytes = shm.buf[:4]
+        # cx, cy = struct.unpack("HH", raw_bytes)#Ye
+        # if cx == 1281 and cy == 961:
+        #     print(f"Мяч не найден")
+        # else:
+        #     real_coords = coord_converter.get_coords(cx,cy)
+        #     print("real coords: ",real_coords)
         time.sleep(0.1)
         data, addr = sock.recvfrom(4096)
 
         cmd = control_pb2.RobotCommand()
         cmd.ParseFromString(data)
-        if cmd.old_format:
-            old_format = cmd.old_format
+        if cmd.new_format:
+            new_format = cmd.new_format
+            if new_format.speed_control.angular_velocity:
+                w = new_format.speed_control.angular_velocity
+                angle_mode = False
+            elif new_format.speed_control.delta_angle:
+                w = new_format.speed_control.delta_angle
+                angle_mode = True
+            else:
+                w = 0
+                angle_mode = True
             json_str = json.dumps({
-            "xvel": old_format.vel_x,
-            "yvel": old_format.vel_y,
-            "wvel": old_format.angular_velocity_or_delta_angle,
-            "dribbler": old_format.dribbler_setting,
-            "voltage": old_format.kicker_setting,
-            "kick_lower": old_format.kick_straight,
-            "kick_upper": old_format.kick_high,
-            "autokick_lower": old_format.autokick_straight,
-            "autokick_upper": old_format.autokick_high,
+            "xvel": new_format.speed_control.vel_x,
+            "yvel": new_format.speed_control.vel_y,
+            "wvel": w,
+            "dribbler": new_format.kicker_and_dribbler.dribbler_setting,
+            "voltage": new_format.kicker_and_dribbler.kicker_setting,
+            "kick_lower": new_format.kicker_and_dribbler.kicker_mode,
+            "kick_upper": False,
+            "autokick_lower": False,
+            "autokick_upper": False,
             "autokick_momentum": False,
-            "angle_mode": old_format.angvel_angle_toggle
+            "angle_mode": angle_mode
             })
-            print(json_str)
+            # print(old_format.vel_x,old_format.vel_y,old_format.angular_velocity_or_delta_angle)
             json_bytes = json_str.encode('utf-8')
             # print(json_bytes)
             ser.write(json_bytes)
+            ser.write(b"\n")
