@@ -4,6 +4,7 @@ import sys
 
 
 def change_hostname(new_hostname:str) -> None:
+    print(f"change hostname to {new_hostname}")
     subprocess.run(["hostnamectl", "set-hostname", new_hostname], check=True)
     with open("/etc/hosts", "r") as f:
         lines = f.readlines()
