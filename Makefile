@@ -5,9 +5,6 @@ SO      ?= ./libyolo26_post.so
 MEDIAMTX ?= /root/mediamtx
 MEDIAMTX_CFG ?= /root/mediamtx.yml
 
-# ---------------------------------------------------------------------------
-# Установка всего стека (только то что реально нужно)
-# ---------------------------------------------------------------------------
 install-deps:
 	# GStreamer + libcamera
 	sudo apt install -y \
@@ -51,30 +48,6 @@ install-mediamtx:
 
 install: install-deps install-driver install-mediamtx
 
-# ---------------------------------------------------------------------------
-# Проверка что всё работает
-# ---------------------------------------------------------------------------
-check:
-	@echo "=== Hailo device ==="
-	hailortcli fw-control identify
-	@echo ""
-	@echo "=== GStreamer Hailo plugins ==="
-	@gst-inspect-1.0 hailonet   2>&1 | head -2
-	@gst-inspect-1.0 hailofilter 2>&1 | head -2
-	@gst-inspect-1.0 hailooverlay 2>&1 | head -2
-	@gst-inspect-1.0 libcamerasrc 2>&1 | head -2
-	@gst-inspect-1.0 jpegenc      2>&1 | head -2
-	@gst-inspect-1.0 rtpjpegpay   2>&1 | head -2
-	@echo ""
-	@echo "=== Camera ==="
-	rpicam-hello --list-cameras 2>&1 | head -5
-	@echo ""
-	@echo "=== Driver ==="
-	ls -la /dev/hailo*
-
-# ---------------------------------------------------------------------------
-# Сборка
-# ---------------------------------------------------------------------------
 compile-so:
 	# Только .so (быстро, без opencv)
 	g++ -shared -fPIC -O3 \
@@ -82,40 +55,20 @@ compile-so:
 		-I/usr/include/hailo/tappas \
 		yolo26_post.cpp -o libyolo26_post.so -lpthread
 
-# ---------------------------------------------------------------------------
-# Запуск
-# ---------------------------------------------------------------------------
+
 run:
 	@trap 'kill 0' SIGINT; \
 	./run.sh --no-stream > /dev/null& \
 	sleep 1;\
 	./venv/bin/python main.py & \
 	wait
-run-gstreamer:
-	# GStreamer pipeline без стрима — только консольный вывод
-	./run.sh --no-stream $(HEF) $(SO)
-
-run-gstreamer-stream:
-	# GStreamer pipeline + RTSP MJPEG стрим через mediaMTX
-	# Смотреть: rtsp://<IP>:8554/ball
-	MEDIAMTX_BIN=$(MEDIAMTX) ./run.sh $(HEF) $(SO)
-
-# ---------------------------------------------------------------------------
-# Отладка
-# ---------------------------------------------------------------------------
-debug-pipeline:
-	# Запуск с GStreamer tracers — показывает время каждого элемента
-	GST_TRACERS="proctime;framerate" GST_DEBUG="GST_TRACER:7" \
-		./run.sh --no-stream $(HEF) $(SO) 2>&1 | grep -E "proctime|framerate|hailonet|hailofilter"
-
-debug-camera:
-	# Проверка камеры без inference
-	gst-launch-1.0 libcamerasrc ! \
-		videoconvert ! \
-		"video/x-raw,format=RGB,width=1296,height=972,framerate=30/1" ! \
-		fakesink sync=false
-
+run-stream:
+	echo "running in STREAM mode. run ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay rtsp://<RPI_IP>:8554/ball to watch stream"
+	@trap 'kill 0' SIGINT; \
+	./run.sh  > /dev/null& \
+	sleep 3;\
+	./venv/bin/python main.py & \
+	wait
 .PHONY: install install-deps install-driver install-mediamtx \
-        check compile compile-so \
-        run run-stream run-stream-hq run-python run-cpp \
-        debug-pipeline debug-camera
+        compile-so \
+        run run-stream 
