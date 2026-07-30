@@ -2,19 +2,34 @@ import socket
 import serial
 import config
 import struct
-from utils.uart_utils import compute_checksum,SYNC_BYTE,PKT_LEN
+# from utils.uart_utils import compute_checksum,SYNC_BYTE,PKT_LEN
 from utils.change_hostname import change_hostname
 from ssl_packet_package.protopy.spbunited.robot import telemetry_pb2
-def telemetry_tranciever():    
+from time import time
+from ball_detector import BallDetector
+SYNC_BYTE = 0xA5
+PKT_LEN = 7
+def compute_checksum(data: bytes) -> int:
+    crc = 0
+    for b in data:
+        crc ^= b
+    return crc
+def get_rpi_temp_c():
+    path = "/sys/class/thermal/thermal_zone0/temp"
+    with open(path, "r") as f:
+        temp_millideg = int(f.read().strip())
+    return temp_millideg / 1000.0
+def telemetry_tranciever(ball_detector:BallDetector):    
+    change_hostname(f"fb4-{5:02d}.local")
     # while True:
     #     pass
     ser = serial.Serial(config.UART_PORT, config.BAUD_RATE, timeout=1)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    cur_robot_id = 0
+    cur_robot_id = 5
     change_hostname(f"fb4-{cur_robot_id:02d}.local")
     _rx_buf = bytearray()
-
+    last_rpi_telemetry = time()
     def read_telemetry():
         # read whatever is available
         waiting = ser.in_waiting
@@ -53,12 +68,18 @@ def telemetry_tranciever():
         packet = read_telemetry()
         if packet:
             # print(packet)
-            if packet["robot_id"] != cur_robot_id:
-                cur_robot_id = packet["robot_id"]
-                change_hostname(f"fb4-{cur_robot_id:02d}.local")
+            # if packet["robot_id"] != cur_robot_id:
+            #     cur_robot_id = packet["robot_id"]
+            #     change_hostname(f"fb4-{cur_robot_id:02d}.local")
             proto_package = telemetry_pb2.RobotTelemetry()
             proto_package.strategy_telemetry.ball_deep = packet["ball_deep"]
             proto_package.strategy_telemetry.ball_in = packet["ball_front"]
             proto_package.strategy_telemetry.kicker_voltage = packet["voltage"]
+            proto_package.strategy_telemetry.ball_position.x  = 10
+            proto_package.strategy_telemetry.ball_position.y  = 10
+            print("tel_p:",ball_detector.r_pos)
+            if time()-last_rpi_telemetry > 1:
+                proto_package.raspberry_status.rpi_temp = get_rpi_temp_c()
             sock.sendto(proto_package.SerializeToString(), ("<broadcast>", config.TEL_PORT))
+                
             

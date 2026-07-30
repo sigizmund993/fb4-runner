@@ -1,6 +1,7 @@
 import time
 import cv2
 import numpy as np
+from utils.auxiliary.aux import Point
 class CoordConverter:
     def __init__(self,cam_params_path:str,hom_matrix_path:str):
         with np.load(cam_params_path) as data:
@@ -9,7 +10,7 @@ class CoordConverter:
         H_mat = np.load(hom_matrix_path)
 
         self.h, self.w = 960, 1280 
-        balance = 0.0
+        balance = 1.0
 
 
         grid_y, grid_x = np.mgrid[0:self.h, 0:self.w]
@@ -30,12 +31,11 @@ class CoordConverter:
         self.LUT_X = X_real.reshape(self.h, self.w)
         self.LUT_Y = Y_real.reshape(self.h, self.w)
 
-    def get_coords(self, u:int , v:int):
-        u_idx = max(0, min(u, self.w - 1))
-        v_idx = max(0, min(v, self.h - 1))
+    def get_coords(self, p:Point)->Point:
+        u_idx = max(0, min(p.x, self.w - 1))
+        v_idx = max(0, min(p.y, self.h - 1))
         
         x_m = self.LUT_X[v_idx, u_idx]
         y_m = self.LUT_Y[v_idx, u_idx]
         
-        return round(float(x_m), 3), round(float(y_m), 3)
-
+        return Point(round(float(x_m), 3), round(float(y_m), 3))
