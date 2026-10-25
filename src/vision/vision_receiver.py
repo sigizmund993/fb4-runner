@@ -1,25 +1,20 @@
 import multiprocessing
+import socket
+import struct
 import time
 import typing
-import socket
+from enum import Enum
+from typing import Optional
 
 import attr
 
 from ssl_packet_package.protopy.ssl.vision.ssl_vision_detection_pb2 import (
+    SSL_DetectionBall,
     SSL_DetectionFrame,
     SSL_DetectionRobot,
-    SSL_DetectionBall,
 )
-import struct
-from typing import Optional
-
-
 from ssl_packet_package.protopy.ssl.vision.ssl_vision_wrapper_pb2 import SSL_WrapperPacket
-import typing
-from enum import Enum
 from utils.auxiliary import aux
-
-
 
 
 class Team(Enum):
@@ -117,7 +112,6 @@ class SocketReader:
                     print("  socket_reader info: ip ", self.ip, " port ", self.port)
                     print("\033[33m  reconecting...\033[0m\n")
                 time.sleep(0.001)
-# TODO: Refactor this class
 @attr.s(auto_attribs=True, kw_only=True)
 class VisionClient:
     multicast_ip: str = "224.5.23.2"
@@ -125,14 +119,11 @@ class VisionClient:
 
     vision_timeout: float = 1
 
-    zmq_relay_template: typing.Any = attr.ib(default=None, init=True)
-
     _socket_reader: SocketReader = attr.ib(init=False)
     _ssl_converter: SSL_WrapperPacket = attr.ib(default=SSL_WrapperPacket(), init=False)
 
     _packages: typing.List[bytes] = attr.ib(init=False)
     _detections: typing.List[Detection] = attr.ib(init=False)
-    _reader: multiprocessing.Process = attr.ib(init=False)
     _robot_detection_time: dict = attr.ib(init=False)
 
     is_blue_on_positive_side: bool = True
@@ -144,15 +135,7 @@ class VisionClient:
         manager = multiprocessing.Manager()
         self._packages = manager.list()
         self._detections = manager.list()
-        self._reader = multiprocessing.Process(target=self._read_loop)
         self._robot_detection_time = {}
-
-    def init(self) -> None:
-        self._reader.start()
-
-    def close(self) -> None:
-        self._reader.terminate()
-        self._reader.join()
 
     def get_detection(self, use_async: bool = True) -> Detection:
         if use_async:
@@ -177,18 +160,17 @@ class VisionClient:
             found = ball or use_async
         return ball
 
-    def _read_loop(self) -> None:
+    def run(self) -> None:
+        """Reads vision packets forever; run it in a separate process."""
         self._packages.append(bytes())
         detection = Detection([], [], None)
         self._detections.append(detection)
-        # zmq_relay = self.zmq_relay_template()
         while True:
             try:
                 new_package = self._socket_reader.read_package()
                 new_detection = self._read_detection(new_package)
                 detection = self._merge_detections(detection, new_detection)
                 self._packages[0] = new_package
-                # zmq_relay.send(new_package)
             except TimeoutError:
                 pass
             detection = self._filter_timed_out_robots(detection)

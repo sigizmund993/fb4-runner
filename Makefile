@@ -60,15 +60,18 @@ run:
 	@trap 'kill 0' SIGINT; \
 	./run.sh --no-stream > /dev/null& \
 	sleep 1;\
-	./venv/bin/python main.py & \
+	PYTHONPATH=. ./venv/bin/python src/main.py & \
 	wait
 run-stream:
 	echo "running in STREAM mode. run ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay rtsp://<RPI_IP>:8554/ball to watch stream"
 	@trap 'kill 0' SIGINT; \
 	./run.sh  > /dev/null& \
 	sleep 3;\
-	./venv/bin/python main.py & \
+	PYTHONPATH=. ./venv/bin/python src/main.py & \
 	wait
+test:
+	$(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -v
+
 .PHONY: install install-deps install-driver install-mediamtx \
         compile-so \
-        run run-stream 
+        run run-stream test 
