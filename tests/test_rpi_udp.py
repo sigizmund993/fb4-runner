@@ -56,7 +56,11 @@ class RpiUdpTest(unittest.TestCase):
         try:
             cls.addr = (socket.gethostbyname(HOST), config.CMD_PORT)
         except socket.gaierror as e:
-            raise unittest.SkipTest(f"can't resolve {HOST} ({e}); set FB4_RPI_HOST=<ip>") from e
+            # The run was requested explicitly, so a missing RPi is an error, not a silent skip
+            raise RuntimeError(
+                f"can't resolve {HOST} ({e}); the RPi's name is fb4-<its ROBOT_ID>.local, "
+                "or pass HOST=<ip>"
+            ) from e
         print(f"\n  RPi {HOST} -> {cls.addr[0]}")
         cls.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         cls.tel_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
