@@ -8,6 +8,7 @@ import helpers
 
 helpers.require_protobuf()
 
+import command_receiver  # noqa: E402
 from command_receiver import CommandReceiver, build_uart_command  # noqa: E402
 from protocol.uart import CMD_FMT, FrameParser  # noqa: E402
 from ssl_packet_package.protopy.spbunited.robot import control_pb2  # noqa: E402
@@ -193,6 +194,20 @@ class CommandReceiverUdpTest(unittest.TestCase):
         self.send(control_pb2.RobotCommand(robot_id=5).SerializePartialToString())  # missing required field
         self.update()
         self.assertEqual(self.receiver.last_cmd.new_format.speed_control.vel_x, 0.5)
+
+    def test_command_expires_when_strategy_goes_silent(self):
+        self.send(new_format_cmd(vel_x=0.5).SerializeToString())
+        self.update()
+        received = self.receiver.last_rx_time
+        timeout = command_receiver.config.CMD_TIMEOUT_S
+        fresh = self.receiver.current_command(received + timeout * 0.5)
+        self.assertEqual(fresh.new_format.speed_control.vel_x, 0.5)
+        stale = self.receiver.current_command(received + timeout * 1.5)
+        uart, _ = build_uart_command(stale, make_robot())
+        self.assertEqual(decode_uart(uart.to_bytes())[:5], (0.0, 0.0, 0.0, 0.0, 0.0))
+
+    def test_no_command_yet_is_stop(self):
+        self.assertEqual(self.receiver.current_command(), control_pb2.RobotCommand())
 
     def test_no_new_data_keeps_last_command(self):
         self.send(new_format_cmd(vel_x=0.5).SerializeToString())

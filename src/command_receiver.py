@@ -1,5 +1,5 @@
 import socket
-from time import sleep, time
+from time import monotonic, sleep, time
 
 import serial
 from google.protobuf.message import DecodeError
@@ -18,6 +18,7 @@ class CommandReceiver:
         self.sock.bind((host, port))
         self.sock.setblocking(False)
         self.last_cmd = control_pb2.RobotCommand()
+        self.last_rx_time = float("-inf")
 
     def update(self) -> None:
         """Drains all pending datagrams and keeps the latest valid command."""
@@ -35,6 +36,13 @@ class CommandReceiver:
             if not cmd.IsInitialized():
                 continue
             self.last_cmd = cmd
+            self.last_rx_time = monotonic()
+
+    def current_command(self, now: float | None = None) -> control_pb2.RobotCommand:
+        """Latest command, or a stop command once the strategy has gone silent."""
+        if (monotonic() if now is None else now) - self.last_rx_time > config.CMD_TIMEOUT_S:
+            return control_pb2.RobotCommand()
+        return self.last_cmd
 
 
 def apply_speed_control(spdc: control_pb2.SpeedControl, uart_command: UartCommand) -> None:
@@ -131,7 +139,7 @@ def command_receiver(client: VisionClient):
     while True:
         field.update()
         receiver.update()
-        uart_command, target_reached = build_uart_command(receiver.last_cmd, robot)
+        uart_command, target_reached = build_uart_command(receiver.current_command(), robot)
         if target_reached:
             receiver.last_cmd = control_pb2.RobotCommand()
         ser.write(uart_command.to_bytes())
