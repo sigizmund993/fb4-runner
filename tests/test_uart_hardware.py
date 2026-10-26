@@ -5,6 +5,7 @@ Skipped unless FB4_HW_TEST=1. Works from the RPi or from a PC with a USB-UART br
     make test-hw                          # RPi, config.UART_PORT (stop main.py first)
     make test-hw PORT=/dev/ttyUSB0        # PC: bridge TX -> PA1 (UART4 RX), bridge RX <- PA0, GND
     FB4_HW_MOTION=1 make test-hw PORT=... # also drives the wheels (robot on a stand!)
+    FB4_HW_MOTION=1 make test-hw K=wheels # only the matching steps (unittest -k)
 
 Disconnect the RPi from PA0/PA1 when using a bridge: two transmitters on one line corrupt each other.
 Steps run in order; the first failing one tells where the link is broken. When run from a
@@ -137,14 +138,19 @@ class UartLinkTest(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("FB4_HW_MOTION") == "1", "set FB4_HW_MOTION=1 to drive the wheels")
     def test_5_wheels_move(self):
-        # Rotation alone does not take the robot out of idle (wheel speed limit 1.0),
-        # so start with a linear command
-        print("\n  robot must be on a stand: forward 0.3 m/s for 1 s, then spin 2 rad/s for 1 s")
-        self.send_for(UartCommand(vel_x=0.3, angle_mode=False), 1.0)
+        # Spin first: it must work straight from idle, without a linear command before it
+        print("\n  robot must be on a stand: spin 2 rad/s for 1 s, then forward 0.3 m/s for 1 s")
         self.send_for(UartCommand(w=2.0, angle_mode=False), 1.0)
+        self.send_for(UartCommand(vel_x=0.3, angle_mode=False), 1.0)
         self.send_for(STOP, STOP_BURST_S)
-        self.confirm("Did the wheels drive forward and then spin?")
+        self.confirm("Did the wheels spin at full speed, then drive forward?")
 
+    @unittest.skipUnless(os.environ.get("FB4_HW_MOTION") == "1", "set FB4_HW_MOTION=1 to drive the wheels")
+    def test_6_stops_on_link_loss(self):
+        print("\n  robot must be on a stand: forward 0.3 m/s for 1 s, then commands stop arriving")
+        self.send_for(UartCommand(vel_x=0.3, angle_mode=False), 1.0)
+        time.sleep(1.5)  # firmware link timeout is 200 ms
+        self.confirm("Did the wheels stop by themselves right after the commands stopped?")
 
 if __name__ == "__main__":
     unittest.main()

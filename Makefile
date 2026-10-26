@@ -72,8 +72,11 @@ run-stream:
 test:
 	$(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -v
 test-hw:
-	FB4_HW_TEST=1 $(if $(PORT),FB4_UART_PORT=$(PORT)) $(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -p test_uart_hardware.py -v
+	FB4_HW_TEST=1 $(if $(PORT),FB4_UART_PORT=$(PORT)) $(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -p test_uart_hardware.py -v $(if $(K),-k $(K))
+
+test-rpi:
+	FB4_RPI_TEST=1 $(if $(HOST),FB4_RPI_HOST=$(HOST)) $(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -p test_rpi_udp.py -v $(if $(K),-k $(K))
 
 .PHONY: install install-deps install-driver install-mediamtx \
         compile-so \
-        run run-stream test test-hw 
+        run run-stream test test-hw test-rpi 
