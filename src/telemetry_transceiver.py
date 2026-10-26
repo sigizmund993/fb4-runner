@@ -22,9 +22,10 @@ def get_rpi_temp_c():
 
 
 def build_telemetry_packet(
-    tel: Telemetry, ball_pos: Optional[aux.Point], rpi_temp: Optional[float]
+    robot_id: int, tel: Telemetry, ball_pos: Optional[aux.Point], rpi_temp: Optional[float]
 ) -> telemetry_pb2.RobotTelemetry:
     packet = telemetry_pb2.RobotTelemetry()
+    packet.robot_id = robot_id
     packet.strategy_telemetry.ball_deep = tel.ball_deep
     packet.strategy_telemetry.ball_in = tel.ball_front
     packet.strategy_telemetry.kicker_voltage = tel.voltage
@@ -44,12 +45,14 @@ class TelemetryTransceiver:
         ser,
         sock: socket.socket,
         ball_detector: BallDetector,
+        robot_id: int = config.ROBOT_ID,
         dest: tuple[str, int] = ("<broadcast>", config.TEL_PORT),
         read_rpi_temp: Callable[[], float] = get_rpi_temp_c,
     ):
         self.ser = ser
         self.sock = sock
         self.ball_detector = ball_detector
+        self.robot_id = robot_id
         self.dest = dest
         self.read_rpi_temp = read_rpi_temp
         self.parser = FrameParser(TEL_FMT)
@@ -68,7 +71,7 @@ class TelemetryTransceiver:
             if time() - self.last_rpi_status > RPI_STATUS_PERIOD_S:
                 rpi_temp = self.read_rpi_temp()
                 self.last_rpi_status = time()
-            packet = build_telemetry_packet(Telemetry(*frame), self.ball_detector.r_pos, rpi_temp)
+            packet = build_telemetry_packet(self.robot_id, Telemetry(*frame), self.ball_detector.r_pos, rpi_temp)
             self.sock.sendto(packet.SerializeToString(), self.dest)
         return len(frames)
 

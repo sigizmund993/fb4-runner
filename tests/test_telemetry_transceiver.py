@@ -60,6 +60,7 @@ def make_transceiver(ser, sock=None, ball_detector=None, rpi_temp=48.5):
         ser,
         sock if sock is not None else FakeSocket(),
         ball_detector if ball_detector is not None else FakeBallDetector(),
+        robot_id=7,
         dest=DEST,
         read_rpi_temp=lambda: rpi_temp,
     )
@@ -67,14 +68,15 @@ def make_transceiver(ser, sock=None, ball_detector=None, rpi_temp=48.5):
 
 class BuildTelemetryPacketTest(unittest.TestCase):
     def test_strategy_fields(self):
-        packet = build_telemetry_packet(Telemetry(5, 12.5, True, False), None, None)
+        packet = build_telemetry_packet(5, Telemetry(5, 12.5, True, False), None, None)
+        self.assertEqual(packet.robot_id, 5)
         st = packet.strategy_telemetry
         self.assertEqual((st.ball_deep, st.ball_in, st.kicker_voltage), (True, False, 12.5))
         self.assertFalse(st.HasField("ball_position"))
         self.assertFalse(packet.HasField("raspberry_status"))
 
     def test_ball_position_and_rpi_temp(self):
-        packet = build_telemetry_packet(Telemetry(5, 0.0, False, True), aux.Point(0.25, -1.5), 47.0)
+        packet = build_telemetry_packet(5, Telemetry(5, 0.0, False, True), aux.Point(0.25, -1.5), 47.0)
         self.assertEqual(
             (packet.strategy_telemetry.ball_position.x, packet.strategy_telemetry.ball_position.y), (0.25, -1.5)
         )
@@ -82,7 +84,7 @@ class BuildTelemetryPacketTest(unittest.TestCase):
 
     def test_packet_serializes(self):
         # Required proto2 fields must be set, otherwise SerializeToString raises
-        packet = build_telemetry_packet(Telemetry(5, 12.5, False, False), None, None)
+        packet = build_telemetry_packet(5, Telemetry(5, 12.5, False, False), None, None)
         self.assertTrue(packet.SerializeToString())
 
 
@@ -92,6 +94,7 @@ class TelemetryTransceiverTest(unittest.TestCase):
         tx = make_transceiver(FakeSerial(mcu_frame(voltage=20.0, ball_deep=True, ball_front=True)), sock)
         self.assertEqual(tx.step(), 1)
         self.assertEqual(sock.sent[0][1], DEST)
+        self.assertEqual(sock.packets()[0].robot_id, 7)
         st = sock.packets()[0].strategy_telemetry
         self.assertEqual((st.kicker_voltage, st.ball_deep, st.ball_in), (20.0, True, True))
 
