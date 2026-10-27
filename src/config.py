@@ -7,6 +7,9 @@ BAUD_RATE = 115200
 UART_PORT = os.environ.get("FB4_UART_PORT", "/dev/ttyACM0")
 CMD_RATE_HZ = 100  # matches the 10 ms firmware main loop
 CMD_TIMEOUT_S = 0.5  # stop the robot when the strategy goes silent for this long
+# Target commands (GLOBAL_COORDINATES, RICOCHET) run without the timeout above, but drive by the
+# SSL vision position: stop when vision hasn't seen the robot for this long
+VISION_TIMEOUT_S = 0.3
 
 CMD_PORT = 5555
 TEL_PORT = 5556

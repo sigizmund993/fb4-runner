@@ -2,6 +2,7 @@
 import math
 import select
 import socket
+import time
 import unittest
 
 import helpers
@@ -19,8 +20,19 @@ from vision.vision_receiver import Team  # noqa: E402
 CT = control_pb2.RobotControlType
 
 
-def make_robot(x=0.0, y=0.0, ang=0.0) -> Robot:
-    return Robot(aux.Point(x, y), ang, 5, Team.YELLOW)
+def make_robot(x=0.0, y=0.0, ang=0.0, seen=True) -> Robot:
+    robot = Robot(aux.Point(x, y), ang, 5, Team.YELLOW)
+    if seen:  # as if vision has just detected it
+        robot.last_update = time.time()
+    return robot
+
+
+def global_coordinates_cmd(x=1.0, y=0.0, angle=0.0):
+    cmd = control_pb2.RobotCommand(robot_id=5, robot_control_type=CT.GLOBAL_COORDINATES)
+    cmd.global_coordinates.x = x
+    cmd.global_coordinates.y = y
+    cmd.global_coordinates.angle = angle
+    return cmd
 
 
 def new_format_cmd(vel_x=0.0, vel_y=0.0, angular_velocity=None, delta_angle=None, kicker_mode=0, kicker=0, dribbler=0):
@@ -189,6 +201,25 @@ class BuildUartCommandTest(unittest.TestCase):
         uart, _ = build_uart_command(cmd, make_robot())
         self.assertEqual((uart.kicker_mode, uart.kicker_voltage, uart.dribbler_speed), (3, 9, 3))
 
+    def test_target_commands_stop_while_vision_lost(self):
+        vision_timeout = command_receiver.config.VISION_TIMEOUT_S
+        for cmd in (global_coordinates_cmd(x=2.0), self.ricochet_cmd(x=2.0)):
+            name = CT.Name(cmd.robot_control_type)
+            with self.subTest(name):
+                robot = make_robot()
+                seen = robot.last_update
+                moving, _ = build_uart_command(cmd, robot, now=seen + vision_timeout * 0.5)
+                self.assertGreater(moving.vel_x, 0)
+                lost, reached = build_uart_command(cmd, robot, ball=aux.Point(0.3, 0.2), now=seen + vision_timeout * 2)
+                self.assertFalse(reached, "the target must survive a vision dropout")
+                self.assertEqual((lost.vel_x, lost.vel_y, lost.w), (0, 0, 0))
+                never_seen, _ = build_uart_command(cmd, make_robot(seen=False))
+                self.assertEqual((never_seen.vel_x, never_seen.vel_y, never_seen.w), (0, 0, 0))
+
+    def test_speed_commands_ignore_vision(self):
+        uart, _ = build_uart_command(new_format_cmd(vel_x=1.0), make_robot(seen=False))
+        self.assertEqual(uart.vel_x, 1.0)
+
     def test_unimplemented_types_send_stop(self):
         for control_type in (CT.COORDINATE_CONTROL, CT.CAP_VEL_AND_ACCEL):
             with self.subTest(control_type=control_type):
@@ -252,6 +283,16 @@ class CommandReceiverUdpTest(unittest.TestCase):
         stale = self.receiver.current_command(received + timeout * 1.5)
         uart, _ = build_uart_command(stale, make_robot())
         self.assertEqual(decode_uart(uart.to_bytes())[:5], (0.0, 0.0, 0.0, 0.0, 0.0))
+
+    def test_target_commands_do_not_expire(self):
+        ricochet = control_pb2.RobotCommand(robot_id=5, robot_control_type=CT.RICOCHET)
+        ricochet.ricochet.x, ricochet.ricochet.y, ricochet.ricochet.angle = 1.0, 0.0, 0.0
+        for cmd in (global_coordinates_cmd(x=1.0), ricochet):
+            with self.subTest(CT.Name(cmd.robot_control_type)):
+                self.send(cmd.SerializeToString())
+                self.update()
+                later = self.receiver.last_rx_time + command_receiver.config.CMD_TIMEOUT_S * 10
+                self.assertEqual(self.receiver.current_command(later), cmd)
 
     def test_no_command_yet_is_stop(self):
         self.assertEqual(self.receiver.current_command(), control_pb2.RobotCommand())

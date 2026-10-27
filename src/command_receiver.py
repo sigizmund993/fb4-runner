@@ -14,6 +14,11 @@ from vision.vision_receiver import Team, VisionClient
 from vision.vision import Field, Robot
 
 
+# Commands with their own end (a target): one packet is enough, they don't expire when the
+# strategy goes silent. They run until reached or replaced.
+TARGET_COMMANDS = (control_pb2.RobotControlType.GLOBAL_COORDINATES, control_pb2.RobotControlType.RICOCHET)
+
+
 class CommandReceiver:
     def __init__(self, host: str = config.BIND_HOST, port: int = config.CMD_PORT):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -41,7 +46,9 @@ class CommandReceiver:
             self.last_rx_time = monotonic()
 
     def current_command(self, now: float | None = None) -> control_pb2.RobotCommand:
-        """Latest command, or a stop command once the strategy has gone silent."""
+        """Latest command, or a stop command once the strategy has gone silent (target commands never expire)."""
+        if self.last_cmd.robot_control_type in TARGET_COMMANDS:
+            return self.last_cmd
         if (monotonic() if now is None else now) - self.last_rx_time > config.CMD_TIMEOUT_S:
             return control_pb2.RobotCommand()
         return self.last_cmd
@@ -111,16 +118,22 @@ def ricochet(cmd: control_pb2.Ricochet, robot: Robot, ball: Optional[aux.Point],
 
 
 def build_uart_command(
-    cmd: control_pb2.RobotCommand, robot: Robot, ball: Optional[aux.Point] = None
+    cmd: control_pb2.RobotCommand, robot: Robot, ball: Optional[aux.Point] = None, now: Optional[float] = None
 ) -> tuple[UartCommand, bool]:
     """Translates a protobuf command into a UART command.
 
     ball is the ball seen by the onboard camera, in the robot frame [m], or None.
+    Target commands send a stop while vision doesn't see the robot (its position would be stale)
+    and resume when it is seen again.
     Returns the command and whether the current target is reached and
     the stored command should be reset.
     """
     uart_command = UartCommand()
     target_reached = False
+    if cmd.robot_control_type in TARGET_COMMANDS and not robot.is_visible(
+        time() if now is None else now, config.VISION_TIMEOUT_S
+    ):
+        return uart_command, False
     match cmd.robot_control_type:
         case control_pb2.RobotControlType.NEW_FORMAT:
             apply_speed_control(cmd.new_format.speed_control, uart_command)

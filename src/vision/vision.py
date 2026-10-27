@@ -27,7 +27,7 @@ class Robot:
         self.team = team
         self.vel = aux.Point(0, 0)
         self.angle_vel = 0.0
-        self.last_update = time()
+        self.last_update = float("-inf")  # time() of the last vision detection; never seen yet
         self.filter_x = AlphaBetaFilter(0.6, 0.15, self.pos.x)
         self.filter_y = AlphaBetaFilter(0.6, 0.15, self.pos.y)
         self.filter_ang = AlphaBetaFilter(0.6, 0.15, self.ang, True)
@@ -41,6 +41,9 @@ class Robot:
         self.angle_vel = self.filter_ang.dx
         self.ang = self.filter_ang.x
         self.last_update = time()
+
+    def is_visible(self, now: float, timeout: float) -> bool:
+        return now - self.last_update <= timeout
 
 
 class Field:
