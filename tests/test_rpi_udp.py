@@ -33,6 +33,9 @@ HOST = os.environ.get("FB4_RPI_HOST") or f"fb4-{config.ROBOT_ID:02d}.local"
 SEND_RATE_HZ = 50
 MIN_TELEMETRY_PER_S = 20  # RPi forwards one packet per MCU frame (~45-100/s)
 LED = "DATA_TRANSFER_1 (PG7)"
+MAX_KICKER_V = 140 * 3.3  # kicker ADC full scale on the MCU
+MAX_BALL_DIST_M = 10.0  # camera ball position beyond this is nonsense
+RPI_TEMP_RANGE_C = (10.0, 90.0)
 
 
 def make_command(vel_x=0.0, vel_y=0.0, angular_velocity=0.0) -> control_pb2.RobotCommand:
@@ -92,7 +95,10 @@ class RpiUdpTest(unittest.TestCase):
                 continue  # some other sender on the port
 
     def own_telemetry(self, packets) -> list[telemetry_pb2.RobotTelemetry]:
-        return [p for p, src in packets if src == self.addr[0]]
+        own = [p for p, src in packets if src == self.addr[0]]
+        for packet in own:
+            self.check_packet(packet)
+        return own
 
     def collect_telemetry(self, duration_s: float) -> list[telemetry_pb2.RobotTelemetry]:
         packets = []
@@ -130,10 +136,32 @@ class RpiUdpTest(unittest.TestCase):
         )
         rate = len(packets) / 2.0
         self.assertGreaterEqual(rate, MIN_TELEMETRY_PER_S, f"only {rate:.0f} telemetry packets/s")
-        last = packets[-1]
-        self.assertEqual(last.robot_id, config.ROBOT_ID, "RPi reports another robot id (FB4_ROBOT_ID?)")
-        self.assertTrue(math.isfinite(last.strategy_telemetry.kicker_voltage))
-        print(f"  {rate:.0f} packets/s, last: robot_id={last.robot_id} {str(last.strategy_telemetry).strip()!r}")
+        temps = [p.raspberry_status.rpi_temp for p in packets if p.raspberry_status.HasField("rpi_temp")]
+        # Sent about once per second; 2 s of packets must contain 1..4 of them
+        self.assertTrue(1 <= len(temps) <= 4, f"rpi_temp in {len(temps)} packets over 2 s, expected ~1/s")
+        balls = [p.strategy_telemetry.ball_position for p in packets if p.strategy_telemetry.HasField("ball_position")]
+        st = packets[-1].strategy_telemetry
+        print(
+            f"  {rate:.0f} packets/s; robot_id={packets[-1].robot_id}, kicker {st.kicker_voltage:.1f} V, "
+            f"ball_in={st.ball_in} ball_deep={st.ball_deep}, rpi_temp={temps[-1]:.1f} C, "
+            f"ball_position in {len(balls)}/{len(packets)} packets"
+            + (f" (last {balls[-1].x:.2f}, {balls[-1].y:.2f} m)" if balls else "")
+        )
+
+    def check_packet(self, packet: telemetry_pb2.RobotTelemetry):
+        """Every field the runner fills must be present and plausible."""
+        self.assertEqual(packet.robot_id, config.ROBOT_ID, "RPi reports another robot id (FB4_ROBOT_ID?)")
+        st = packet.strategy_telemetry
+        for field in ("ball_in", "ball_deep", "kicker_voltage"):
+            self.assertTrue(st.HasField(field), f"strategy_telemetry.{field} missing: {packet}")
+        self.assertTrue(math.isfinite(st.kicker_voltage), f"kicker_voltage is not a number: {packet}")
+        self.assertTrue(0 <= st.kicker_voltage <= MAX_KICKER_V, f"kicker_voltage outside 0..{MAX_KICKER_V:.0f} V: {packet}")
+        if st.HasField("ball_position"):
+            for axis in (st.ball_position.x, st.ball_position.y):
+                self.assertTrue(math.isfinite(axis) and abs(axis) <= MAX_BALL_DIST_M, f"bad ball_position: {packet}")
+        if packet.HasField("raspberry_status"):
+            temp = packet.raspberry_status.rpi_temp
+            self.assertTrue(RPI_TEMP_RANGE_C[0] <= temp <= RPI_TEMP_RANGE_C[1], f"rpi_temp {temp} C implausible")
 
     def test_2_commands_reach_mcu(self):
         print(f"\n  watch LED {LED}: blinks ~5 Hz for 3 s, steady for 2 s, blinks again for 3 s")
