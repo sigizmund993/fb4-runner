@@ -13,3 +13,8 @@ TEL_PORT = 5556
 BIND_HOST = "0.0.0.0"
 
 SHM_NAME = "ball_shm"
+
+# RICOCHET: lateral speed per metre of ball offset seen by the onboard camera
+# (ball_detector.r_pos.y, robot frame). Flip the sign if the robot runs away from the ball.
+RICOCHET_CAM_GAIN = float(os.environ.get("FB4_RICOCHET_CAM_GAIN", 5.0))  # [1/s]
+RICOCHET_MAX_VEL = 2.0  # [m/s]

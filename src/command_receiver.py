@@ -1,10 +1,12 @@
 import socket
 from time import monotonic, sleep, time
+from typing import Optional
 
 import serial
 from google.protobuf.message import DecodeError
 
 import config
+from ball_detector import BallDetector
 from protocol.uart import UartCommand
 from ssl_packet_package.protopy.spbunited.robot import control_pb2
 from utils.auxiliary import aux
@@ -96,9 +98,24 @@ def go_to_point_ignore(robot: Robot, tgt_pos: aux.Point, tgt_ang: float, uart_co
     uart_command.angle_mode = True
 
 
-def build_uart_command(cmd: control_pb2.RobotCommand, robot: Robot) -> tuple[UartCommand, bool]:
+def ricochet(cmd: control_pb2.Ricochet, robot: Robot, ball: Optional[aux.Point], uart_command: UartCommand) -> None:
+    """Holds the target angle and drives to the target; once the camera sees the ball,
+    the sideways speed follows the ball instead, so it bounces off at the set angle."""
+    go_to_point_ignore(robot, aux.Point(cmd.x, cmd.y), cmd.angle, uart_command)
+    if ball is not None:
+        uart_command.vel_y = config.RICOCHET_CAM_GAIN * ball.y
+    uart_command.vel_x = aux.minmax(uart_command.vel_x, config.RICOCHET_MAX_VEL)
+    uart_command.vel_y = aux.minmax(uart_command.vel_y, config.RICOCHET_MAX_VEL)
+    if cmd.HasField("kicker_and_dribbler"):
+        apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
+
+
+def build_uart_command(
+    cmd: control_pb2.RobotCommand, robot: Robot, ball: Optional[aux.Point] = None
+) -> tuple[UartCommand, bool]:
     """Translates a protobuf command into a UART command.
 
+    ball is the ball seen by the onboard camera, in the robot frame [m], or None.
     Returns the command and whether the current target is reached and
     the stored command should be reset.
     """
@@ -122,13 +139,16 @@ def build_uart_command(cmd: control_pb2.RobotCommand, robot: Robot) -> tuple[Uar
                 go_to_point_ignore(robot, tgt, cmd.global_coordinates.angle, uart_command)
             else:
                 target_reached = True
+        case control_pb2.RobotControlType.RICOCHET:
+            # Never "reached": the robot waits at the target for the ball
+            ricochet(cmd.ricochet, robot, ball, uart_command)
         case control_pb2.RobotControlType.CAP_VEL_AND_ACCEL:
             # TODO: implement
             pass
     return uart_command, target_reached
 
 
-def command_receiver(client: VisionClient):
+def command_receiver(client: VisionClient, ball_detector: BallDetector):
     field = Field(client)
     receiver = CommandReceiver()
     ser = serial.Serial(config.UART_PORT, config.BAUD_RATE)
@@ -139,7 +159,8 @@ def command_receiver(client: VisionClient):
     while True:
         field.update()
         receiver.update()
-        uart_command, target_reached = build_uart_command(receiver.current_command(), robot)
+        ball_detector.update()
+        uart_command, target_reached = build_uart_command(receiver.current_command(), robot, ball_detector.r_pos)
         if target_reached:
             receiver.last_cmd = control_pb2.RobotCommand()
         ser.write(uart_command.to_bytes())

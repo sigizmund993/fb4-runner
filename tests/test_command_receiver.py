@@ -142,6 +142,53 @@ class BuildUartCommandTest(unittest.TestCase):
         self.assertTrue(reached)
         self.assertEqual((uart.vel_x, uart.vel_y, uart.w), (0, 0, 0))
 
+    def ricochet_cmd(self, x=1.0, y=0.0, angle=0.0, kicker_mode=None):
+        cmd = control_pb2.RobotCommand(robot_id=5, robot_control_type=CT.RICOCHET)
+        cmd.ricochet.x = x
+        cmd.ricochet.y = y
+        cmd.ricochet.angle = angle
+        if kicker_mode is not None:
+            kad = cmd.ricochet.kicker_and_dribbler
+            kad.kicker_mode = kicker_mode
+            kad.kicker_setting = 9
+            kad.dribbler_setting = 3
+        return cmd
+
+    def test_ricochet_drives_to_target_holding_angle(self):
+        # Robot faces +y; target is 1 m along global +x (its right) and wants heading 0
+        uart, reached = build_uart_command(self.ricochet_cmd(angle=0.0), make_robot(ang=math.pi / 2))
+        self.assertFalse(reached)
+        self.assertAlmostEqual(uart.vel_x, 0.0, places=6)
+        self.assertAlmostEqual(uart.vel_y, -1.0, places=6)
+        self.assertAlmostEqual(uart.w, -math.pi / 2, places=6)
+        self.assertTrue(uart.angle_mode)
+        self.assertEqual((uart.kicker_mode, uart.kicker_voltage, uart.dribbler_speed), (0, 0, 0))
+
+    def test_ricochet_waits_at_target(self):
+        uart, reached = build_uart_command(self.ricochet_cmd(x=1.0), make_robot(x=1.0))
+        self.assertFalse(reached, "the robot must keep waiting for the ball, not drop the command")
+        self.assertEqual((uart.vel_x, uart.vel_y, uart.w), (0, 0, 0))
+
+    def test_ricochet_follows_ball_sideways_without_turning(self):
+        gain = command_receiver.config.RICOCHET_CAM_GAIN
+        robot = make_robot(x=0.5, ang=0.3)
+        cmd = self.ricochet_cmd(x=1.0, angle=0.3)
+        no_ball, _ = build_uart_command(cmd, robot)
+        uart, _ = build_uart_command(cmd, robot, ball=aux.Point(0.4, 0.1))
+        self.assertAlmostEqual(uart.vel_y, gain * 0.1, places=6)
+        # Forward speed and heading still come from the target
+        self.assertEqual((uart.vel_x, uart.w, uart.angle_mode), (no_ball.vel_x, no_ball.w, True))
+
+    def test_ricochet_speed_is_limited(self):
+        limit = command_receiver.config.RICOCHET_MAX_VEL
+        uart, _ = build_uart_command(self.ricochet_cmd(x=10.0), make_robot(), ball=aux.Point(0.2, -5.0))
+        self.assertEqual((uart.vel_x, uart.vel_y), (limit, -limit))
+
+    def test_ricochet_kicker_and_dribbler(self):
+        cmd = self.ricochet_cmd(kicker_mode=control_pb2.KickerMode.AUTOKICK_STRAIGHT)
+        uart, _ = build_uart_command(cmd, make_robot())
+        self.assertEqual((uart.kicker_mode, uart.kicker_voltage, uart.dribbler_speed), (3, 9, 3))
+
     def test_unimplemented_types_send_stop(self):
         for control_type in (CT.COORDINATE_CONTROL, CT.CAP_VEL_AND_ACCEL):
             with self.subTest(control_type=control_type):

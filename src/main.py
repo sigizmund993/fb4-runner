@@ -11,7 +11,7 @@ def main():
     ball_detector = BallDetector()
     processes = [
         multiprocessing.Process(target=client.run, name="Vision_Receiver"),
-        multiprocessing.Process(target=command_receiver, args=(client,), name="Command_Sender"),
+        multiprocessing.Process(target=command_receiver, args=(client, ball_detector), name="Command_Sender"),
         multiprocessing.Process(target=telemetry_transceiver, args=(ball_detector,), name="Telemetry_Transceiver"),
     ]
 
