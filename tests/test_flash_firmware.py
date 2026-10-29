@@ -34,6 +34,14 @@ class TagsTest(unittest.TestCase):
              mock.patch("builtins.print"):
             self.assertEqual(ff.find_latest("b"), ("t4", Path("t4")))
 
+    def test_release_tag(self):
+        prefix = ff.tag_prefix("feature/uart_for_rpi")
+        for release, tag in (("latest", None), ("5", f"{prefix}5"), ("v0.0.12", f"{prefix}12"),
+                             ("feature-x-v0.0.3", "feature-x-v0.0.3")):
+            with self.subTest(release):
+                self.assertEqual(ff.release_tag(release, "feature/uart_for_rpi"), tag)
+        self.assertEqual(ff.release_tag("7", "main"), "v0.0.7")
+
     def test_no_releases(self):
         with mock.patch.object(ff, "list_release_tags", return_value=[]):
             self.assertRaises(LookupError, ff.find_latest, "b")
@@ -59,6 +67,7 @@ class MainTest(unittest.TestCase):
         self.calls = []
         patches = [
             mock.patch.object(ff, "find_latest", return_value=("t1", self.image)),
+            mock.patch.object(ff, "RELEASE", "latest"),  # not whatever the local .env says
             mock.patch.object(ff, "st_flash", side_effect=self.fake_st_flash),
         ]
         for p in patches:
@@ -92,6 +101,13 @@ class MainTest(unittest.TestCase):
         self.calls.clear()
         self.assertEqual(self.run_main("--dry-run"), 0)
         self.assertEqual(self.calls, [])
+
+    def test_specific_release(self):
+        with mock.patch.object(ff, "download", return_value=self.image) as download:
+            self.assertEqual(self.run_main("--branch", "main", "--release", "3", "--dry-run"), 0)
+        download.assert_called_once_with("v0.0.3")
+        with mock.patch.object(ff, "download", return_value=None):
+            self.assertEqual(self.run_main("--release", "3"), 1)
 
     def test_offline_keeps_firmware(self):
         with mock.patch.object(ff, "find_latest", side_effect=ff.Offline("no network")):

@@ -1,6 +1,10 @@
-import os
 import re
 import socket
+
+from utils import envfile
+
+# Per-robot settings come from .env in the repository root (copy .env.example); a variable set
+# in the environment overrides the file
 
 
 def hostname_robot_id() -> int | None:
@@ -13,17 +17,18 @@ def robot_hostname(robot_id: int) -> str:
     return f"fb4-{robot_id:02d}.local"
 
 
-# The robot id is agreed with the STM32 over UART (see telemetry_transceiver) and kept in the
-# hostname. None: not known yet, the STM32's id is taken.
-ROBOT_ID = int(os.environ["FB4_ROBOT_ID"]) if "FB4_ROBOT_ID" in os.environ else hostname_robot_id()
+# The robot id is agreed with the STM32 over UART (see telemetry_transceiver), which writes it to
+# .env and the hostname. Empty in .env: the hostname's; None: not known yet, the STM32's is taken.
+ROBOT_ID_KEY = "FB4_ROBOT_ID"
+ROBOT_ID = int(envfile.get(ROBOT_ID_KEY)) if envfile.get(ROBOT_ID_KEY) else hostname_robot_id()
 MAX_ROBOT_ID = 15  # the firmware's id buttons wrap at 16
 # Take the STM32's id once it has differed from ours this long: on connect the STM32 takes our
 # id within a frame, so a lasting difference means it was changed with the buttons
 ROBOT_ID_ADOPT_S = 1.0
-ROBOT_TEAM = os.environ.get("FB4_ROBOT_TEAM", "yellow")
+ROBOT_TEAM = envfile.get("FB4_ROBOT_TEAM", "yellow")
 
 BAUD_RATE = 115200
-UART_PORT = os.environ.get("FB4_UART_PORT", "/dev/ttyACM0")
+UART_PORT = envfile.get("FB4_UART_PORT", "/dev/ttyACM0")
 CMD_RATE_HZ = 100  # matches the 10 ms firmware main loop
 CMD_TIMEOUT_S = 0.5  # stop the robot when the strategy goes silent for this long
 # Target commands (GLOBAL_COORDINATES, RICOCHET) run without the timeout above, but drive by the
@@ -38,5 +43,5 @@ SHM_NAME = "ball_shm"
 
 # RICOCHET: lateral speed per metre of ball offset seen by the onboard camera
 # (ball_detector.r_pos.y, robot frame). Flip the sign if the robot runs away from the ball.
-RICOCHET_CAM_GAIN = float(os.environ.get("FB4_RICOCHET_CAM_GAIN", 5.0))  # [1/s]
+RICOCHET_CAM_GAIN = float(envfile.get("FB4_RICOCHET_CAM_GAIN", "5.0"))  # [1/s]
 RICOCHET_MAX_VEL = 2.0  # [m/s]

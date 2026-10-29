@@ -5,10 +5,10 @@ CI (FootBot4_Firmware/.github/workflows/release.yml) tags every push to branch B
 "<B with / replaced by ->-v0.0.N" ("v0.0.N" for main) and attaches firmware-<tag>.bin
 to the GitHub release of that tag.
 
-    python3 src/utils/flash_firmware.py              # latest release of FB4_FW_BRANCH
+    python3 src/utils/flash_firmware.py              # FB4_FW_RELEASE of FB4_FW_BRANCH (.env)
     python3 src/utils/flash_firmware.py --dry-run    # find and download, don't flash
-    python3 src/utils/flash_firmware.py --tag feature-uart_for_rpi-v0.0.5
-    python3 src/utils/flash_firmware.py --branch main --force
+    python3 src/utils/flash_firmware.py --release 5  # = v0.0.5 = feature-uart_for_rpi-v0.0.5
+    python3 src/utils/flash_firmware.py --branch main --release latest --force
 
 Reads the MCU flash back first and only writes when it differs, so it is safe to run on
 every boot. Without network it keeps the current firmware and exits 0. Standard library
@@ -17,6 +17,7 @@ only: runs with the system python3, without the runner's venv. Needs git and st-
 """
 import argparse
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -25,9 +26,14 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-REPO = os.environ.get("FB4_FW_REPO", "SPbUnited/FootBot4_Firmware")
-BRANCH = os.environ.get("FB4_FW_BRANCH", "feature/uart_for_rpi")
-CACHE_DIR = Path(os.environ.get("FB4_FW_CACHE", Path.home() / ".cache" / "fb4-firmware"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # src, when run as a script
+from utils import envfile  # noqa: E402
+
+REPO = envfile.get("FB4_FW_REPO", "SPbUnited/FootBot4_Firmware")
+BRANCH = envfile.get("FB4_FW_BRANCH", "feature/uart_for_rpi")
+# "latest", a release number of BRANCH ("5" or "v0.0.5") or a full tag
+RELEASE = envfile.get("FB4_FW_RELEASE", "latest")
+CACHE_DIR = Path(envfile.get("FB4_FW_CACHE", str(Path.home() / ".cache" / "fb4-firmware")))
 FLASH_BASE = 0x0800_0000
 FLASH_SIZE = 2 * 1024 * 1024  # STM32F429ZI
 RAM_RANGE = (0x2000_0000, 0x2003_0000)  # SRAM1..3, where the initial stack pointer must be
@@ -54,6 +60,14 @@ def parse_tags(ls_remote_output: str, prefix: str) -> list[str]:
         if ref.startswith(prefix) and number.isdigit():
             numbered.append((int(number), ref))
     return [ref for _, ref in sorted(numbered, reverse=True)]
+
+
+def release_tag(release: str, branch: str) -> str | None:
+    """Full tag of a release given as "5", "v0.0.5" or the full tag; None for "latest"."""
+    if release == "latest":
+        return None
+    number = re.fullmatch(r"(?:v0\.0\.)?(\d+)", release)
+    return tag_prefix(branch) + number.group(1) if number else release
 
 
 def list_release_tags(branch: str) -> list[str]:
@@ -134,18 +148,22 @@ def mcu_has_image(image: Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--branch", default=BRANCH, help=f"firmware branch (default {BRANCH})")
-    parser.add_argument("--tag", help="exact release tag instead of the latest one")
+    parser.add_argument(
+        "--release", "--tag", default=RELEASE,
+        help=f'"latest", a release number of the branch (5 or v0.0.5) or a full tag (default {RELEASE})',
+    )
     parser.add_argument("--force", action="store_true", help="flash even if the MCU already has this image")
     parser.add_argument("--dry-run", action="store_true", help="find and download only")
     args = parser.parse_args(argv)
 
     try:
-        if args.tag:
-            tag, image = args.tag, download(args.tag)
-            if image is None:
-                raise LookupError(f"release {args.tag} has no firmware .bin")
-        else:
+        tag = release_tag(args.release, args.branch)
+        if tag is None:
             tag, image = find_latest(args.branch)
+        else:
+            image = download(tag)
+            if image is None:
+                raise LookupError(f"release {tag} has no firmware .bin")
     except Offline as e:
         print(f"offline, keeping the current firmware: {e}")
         return 0

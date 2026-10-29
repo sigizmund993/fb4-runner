@@ -3,13 +3,32 @@
 Программа на Raspberry Pi робота FootBot4: принимает команды стратегии по UDP, переводит их в UART-команды для STM32 ([прошивка](https://github.com/SPbUnited/FootBot4_Firmware)), пересылает телеметрию STM32 и мяч с бортовой камеры обратно стратегии.
 
 ```bash
+cp .env.example .env   # один раз, настройки робота
 make run          # без видеострима
 make run-stream   # со стримом rtsp://<RPi>:8554/ball
 make test         # юнит-тесты
-make flash-fw     # залить на STM32 последний релиз прошивки из CI
+make flash-fw     # залить на STM32 релиз прошивки из CI (FB4_FW_RELEASE)
 ```
 
 Процессы (`src/main.py`): приём SSL vision, `command_receiver` (UDP :5555 → UART, 100 Гц), `telemetry_transceiver` (UART → UDP broadcast :5556).
+
+## Настройки (.env)
+
+Настройки робота лежат в `.env` в корне репозитория. Файл не в git, у каждого робота свой; шаблон с описанием переменных — `.env.example`. Переменная, заданная в окружении (`FB4_ROBOT_TEAM=blue make run`), перекрывает файл. Без `.env` используются значения по умолчанию.
+
+| Переменная | По умолчанию | Что это |
+|---|---|---|
+| `FB4_ROBOT_ID` | из hostname `fb4-NN` | id робота 0..15, раннер сам переписывает его (см. ниже) |
+| `FB4_ROBOT_TEAM` | `yellow` | `yellow` или `blue`, для поиска робота в SSL vision |
+| `FB4_UART_PORT` | `/dev/ttyACM0` | порт STM32 |
+| `FB4_RICOCHET_CAM_GAIN` | `5.0` | RICOCHET: поперечная скорость [1/с] на метр смещения мяча |
+| `FB4_FW_REPO` | `SPbUnited/FootBot4_Firmware` | репозиторий прошивки |
+| `FB4_FW_BRANCH` | `feature/uart_for_rpi` | ветка прошивки |
+| `FB4_FW_RELEASE` | `latest` | `latest`, номер релиза ветки (`5` или `v0.0.5`) или полный тег |
+
+Читает файл `src/utils/envfile.py` (только stdlib: `flash_firmware.py` работает без venv). Другой файл можно подсунуть через `FB4_ENV_FILE`.
+
+Прошивка: `make flash-fw` берёт `FB4_FW_BRANCH` и `FB4_FW_RELEASE`; разово можно `make flash-fw RELEASE=5`, `make flash-fw BRANCH=main RELEASE=latest`, `ARGS=--dry-run` — только найти и скачать. Если на STM32 уже этот образ, повторно не пишет.
 
 ## UART с STM32
 
@@ -30,12 +49,12 @@ make flash-fw     # залить на STM32 последний релиз про
 
 ## robot_id и hostname
 
-Id робота согласуется с STM32 по UART и хранится в hostname RPi (`fb4-NN`, в mDNS — `fb4-NN.local`).
+Id робота согласуется с STM32 по UART и хранится в `.env` (`FB4_ROBOT_ID`) и в hostname RPi (`fb4-NN`, в mDNS — `fb4-NN.local`).
 
-- При старте id берётся из `FB4_ROBOT_ID`, иначе из hostname `fb4-NN`. Если hostname другой, id неизвестен: RPi шлёт `0xFF`, STM32 оставляет свой, а RPi сразу берёт id STM32.
-- Если задан `FB4_ROBOT_ID` и hostname с ним не совпадает, RPi переименовывается при старте.
+- При старте id берётся из `FB4_ROBOT_ID` (окружение, потом `.env`), если он пуст — из hostname `fb4-NN`. Если и hostname другой, id неизвестен: RPi шлёт `0xFF`, STM32 оставляет свой, а RPi сразу берёт id STM32.
+- Если hostname не совпадает с id, RPi переименовывается при старте.
 - RPi шлёт свой id в каждой команде. STM32 берёт его сразу и сохраняет в EEPROM, кроме случая, когда id на роботе только что поменяли кнопками.
-- `telemetry_transceiver` берёт id STM32, если тот отличается от своего дольше `ROBOT_ID_ADOPT_S` (1 с), и меняет hostname (`hostnamectl`, `/etc/hosts`, перезапуск avahi; нужен root). Задержка даёт STM32 время взять id RPi при подключении и не переименовывает RPi на каждом нажатии кнопки, пока id перебирают.
+- `telemetry_transceiver` берёт id STM32, если тот отличается от своего дольше `ROBOT_ID_ADOPT_S` (1 с), записывает его в `.env` (иначе после перезапуска старый id из `.env` вернулся бы на STM32) и меняет hostname (`hostnamectl`, `/etc/hosts`, перезапуск avahi; нужен root). Если `FB4_ROBOT_ID` задан в окружении, а не в `.env`, после перезапуска победит он. Задержка даёт STM32 время взять id RPi при подключении и не переименовывает RPi на каждом нажатии кнопки, пока id перебирают.
 - Текущий id делят процессы через `multiprocessing.Value` (`-1` — неизвестен). `command_receiver` подхватывает новый id на лету: шлёт его в UART и ищет в SSL vision робота с этим id. Пока id неизвестен, команды с целью (GLOBAL_COORDINATES, RICOCHET) стоят.
 - После смены id стратегия и teleop должны обращаться к новому `fb4-NN.local`.
 

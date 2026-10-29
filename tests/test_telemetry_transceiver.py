@@ -73,7 +73,7 @@ def make_transceiver(ser, sock=None, ball_detector=None, rpi_temp=48.5, robot_id
         robot_id=multiprocessing.Value("i", robot_id),
         dest=DEST,
         read_rpi_temp=lambda: rpi_temp,
-        rename=(renames if renames is not None else []).append,
+        save_id=(renames if renames is not None else []).append,
         clock=clock if clock is not None else FakeClock(),
     )
 

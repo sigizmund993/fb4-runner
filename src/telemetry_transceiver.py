@@ -11,6 +11,7 @@ from ball_detector import BallDetector
 from protocol.uart import TEL_FMT, FrameParser, Telemetry
 from ssl_packet_package.protopy.spbunited.robot import telemetry_pb2
 from utils.auxiliary import aux
+from utils import envfile
 from utils.change_hostname import change_hostname
 
 RPI_STATUS_PERIOD_S = 1.0
@@ -46,12 +47,21 @@ def rename_rpi(robot_id: int) -> None:
         print(f"can't change hostname: {e}")
 
 
+def save_robot_id(robot_id: int) -> None:
+    """Keeps the id over restarts: otherwise .env would bring back the old one and the STM32 would take it."""
+    try:
+        envfile.put(config.ROBOT_ID_KEY, str(robot_id))
+    except OSError as e:
+        print(f"can't save robot id to {envfile.ENV_FILE}: {e}")
+    rename_rpi(robot_id)
+
+
 class TelemetryTransceiver:
     """Forwards telemetry frames from the MCU as UDP broadcast protobuf packets.
 
     Also agrees the robot id with the MCU. Both send their id in every frame; the MCU takes ours
     right away unless its id was just changed with the buttons, and we take the MCU's once it has
-    differed for ROBOT_ID_ADOPT_S, renaming the RPi to fb4-NN.
+    differed for ROBOT_ID_ADOPT_S, saving it to .env and renaming the RPi to fb4-NN.
     """
 
     def __init__(
@@ -62,7 +72,7 @@ class TelemetryTransceiver:
         robot_id=None,
         dest: tuple[str, int] = ("<broadcast>", config.TEL_PORT),
         read_rpi_temp: Callable[[], float] = get_rpi_temp_c,
-        rename: Callable[[int], None] = rename_rpi,
+        save_id: Callable[[int], None] = save_robot_id,
         clock: Callable[[], float] = monotonic,
     ):
         self.ser = ser
@@ -74,7 +84,7 @@ class TelemetryTransceiver:
         self.robot_id = robot_id
         self.dest = dest
         self.read_rpi_temp = read_rpi_temp
-        self.rename = rename
+        self.save_id = save_id
         self.clock = clock
         self.parser = FrameParser(TEL_FMT)
         self.last_rpi_status = 0.01
@@ -92,7 +102,7 @@ class TelemetryTransceiver:
         print(f"robot id {self.robot_id.value} -> {mcu_id} from the MCU")
         self.robot_id.value = mcu_id
         self.id_mismatch = None
-        self.rename(mcu_id)
+        self.save_id(mcu_id)
 
     def step(self) -> int:
         """Reads pending UART bytes and sends a packet per frame. Returns the number sent."""
