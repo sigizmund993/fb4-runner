@@ -35,6 +35,9 @@ CMD_TIMEOUT_S = 0.5  # stop the robot when the strategy goes silent for this lon
 # SSL vision position: stop when vision hasn't seen the robot for this long
 VISION_TIMEOUT_S = 0.3
 
+KICKER_MAX_V = 330  # the firmware's capacitor charge limit
+KICKER_MIN_SETTING_V = 100  # OldFormat kicker_setting 1; 15 is KICKER_MAX_V
+
 CMD_PORT = 5555
 TEL_PORT = 5556
 BIND_HOST = "0.0.0.0"

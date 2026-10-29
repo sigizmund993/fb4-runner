@@ -9,7 +9,7 @@ from dataclasses import dataclass
 SYNC_BYTE = 0xA5
 NO_ROBOT_ID = 0xFF  # robot_id in a command: the RPi doesn't know its id, the STM32 keeps its own
 
-# vel_x, vel_y, w, dribbler, kicker (fp16), kicker_mode (u8), angle_mode (bool), beep (bool),
+# vel_x, vel_y, w, dribbler, kicker [V] (fp16), kicker_mode (u8), angle_mode (bool), beep (bool),
 # robot_id (u8)
 CMD_FMT = "<5eB??B"
 CMD_FRAME_LEN = 1 + struct.calcsize(CMD_FMT) + 1
@@ -53,7 +53,7 @@ class UartCommand:
     vel_y: float = 0.0
     w: float = 0.0
     dribbler_speed: float = 0.0
-    kicker_voltage: float = 0.0
+    kicker_voltage: float = 0.0  # [V] capacitor target 0..330, 0 - don't charge
     kicker_mode: int = 0
     angle_mode: bool = True  # False - angular velocity, True - delta angle
     beep: bool = False

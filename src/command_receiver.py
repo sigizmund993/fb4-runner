@@ -71,9 +71,18 @@ def apply_speed_control(spdc: control_pb2.SpeedControl, uart_command: UartComman
         uart_command.angle_mode = True
 
 
+def kicker_setting_to_voltage(setting: int) -> float:
+    """OldFormat's kicker level: 0 - don't charge, 1..15 - KICKER_MIN_SETTING_V..KICKER_MAX_V."""
+    if setting == 0:
+        return 0.0
+    span = config.KICKER_MAX_V - config.KICKER_MIN_SETTING_V
+    return config.KICKER_MIN_SETTING_V + (min(setting, 15) - 1) / (15 - 1) * span
+
+
 def apply_kicker_and_dribbler(kad: control_pb2.KickerAndDribbler, uart_command: UartCommand) -> None:
     uart_command.dribbler_speed = kad.dribbler_setting
-    uart_command.kicker_voltage = kad.kicker_setting
+    # The firmware clamps too, but fp16 can't even hold a huge uint32
+    uart_command.kicker_voltage = min(kad.kicker_voltage, config.KICKER_MAX_V)
     uart_command.kicker_mode = kad.kicker_mode
 
 
@@ -81,7 +90,7 @@ def apply_old_format(cmd, uart_command: UartCommand) -> None:
     uart_command.vel_x = cmd.vel_x
     uart_command.vel_y = cmd.vel_y
     uart_command.w = cmd.angular_velocity_or_delta_angle
-    uart_command.kicker_voltage = cmd.kicker_setting
+    uart_command.kicker_voltage = kicker_setting_to_voltage(cmd.kicker_setting)
     uart_command.dribbler_speed = cmd.dribbler_setting * cmd.dribbler_is_enabled
     uart_command.angle_mode = cmd.angvel_angle_toggle
     if cmd.kick_straight:

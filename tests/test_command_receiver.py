@@ -46,7 +46,7 @@ def new_format_cmd(vel_x=0.0, vel_y=0.0, angular_velocity=None, delta_angle=None
         spdc.delta_angle = delta_angle
     kad = cmd.new_format.kicker_and_dribbler
     kad.kicker_mode = kicker_mode
-    kad.kicker_setting = kicker
+    kad.kicker_voltage = kicker
     kad.dribbler_setting = dribbler
     return cmd
 
@@ -103,7 +103,7 @@ class BuildUartCommandTest(unittest.TestCase):
     def test_kicker_and_dribbler_only(self):
         cmd = control_pb2.RobotCommand(robot_id=5, robot_control_type=CT.KICKER_AND_DRIBBLER)
         cmd.kicker_and_dribbler.kicker_mode = control_pb2.KickerMode.AUTOKICK_HIGH
-        cmd.kicker_and_dribbler.kicker_setting = 15
+        cmd.kicker_and_dribbler.kicker_voltage = 15
         cmd.kicker_and_dribbler.dribbler_setting = 4
         uart, _ = build_uart_command(cmd, make_robot())
         self.assertEqual((uart.vel_x, uart.vel_y, uart.w), (0, 0, 0))
@@ -126,11 +126,21 @@ class BuildUartCommandTest(unittest.TestCase):
     def test_old_format_fields(self):
         uart, _ = build_uart_command(old_format_cmd(angvel_angle_toggle=True), make_robot())
         self.assertEqual(
-            (uart.vel_x, uart.vel_y, uart.w, uart.kicker_voltage, uart.dribbler_speed, uart.angle_mode),
-            (1, -2, 3, 10, 7, True),
+            (uart.vel_x, uart.vel_y, uart.w, uart.dribbler_speed, uart.angle_mode),
+            (1, -2, 3, 7, True),
         )
+        self.assertAlmostEqual(uart.kicker_voltage, 100 + 9 / 14 * 230)  # level 10
         uart, _ = build_uart_command(old_format_cmd(dribbler_is_enabled=False), make_robot())
         self.assertEqual(uart.dribbler_speed, 0)
+
+    def test_old_format_kicker_levels_to_volts(self):
+        for level, volts in ((0, 0), (1, 100), (15, 330), (200, 330)):
+            with self.subTest(level=level):
+                self.assertAlmostEqual(command_receiver.kicker_setting_to_voltage(level), volts)
+
+    def test_kicker_voltage_is_limited(self):
+        uart, _ = build_uart_command(new_format_cmd(kicker=100_000), make_robot())
+        self.assertEqual(decode_uart(uart.to_bytes())[4], 330)
 
     def test_global_coordinates_drives_in_robot_frame(self):
         cmd = control_pb2.RobotCommand(robot_id=5, robot_control_type=CT.GLOBAL_COORDINATES)
@@ -162,7 +172,7 @@ class BuildUartCommandTest(unittest.TestCase):
         if kicker_mode is not None:
             kad = cmd.ricochet.kicker_and_dribbler
             kad.kicker_mode = kicker_mode
-            kad.kicker_setting = 9
+            kad.kicker_voltage = 9
             kad.dribbler_setting = 3
         return cmd
 

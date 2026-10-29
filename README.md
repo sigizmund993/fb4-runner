@@ -37,10 +37,20 @@ make flash-fw     # залить на STM32 релиз прошивки из CI 
 
 | Направление | Формат | Поля | Кадр |
 |---|---|---|---|
-| RPi → STM | `<5eB??B` | vel_x, vel_y, w, dribbler, kicker (fp16), kicker_mode, angle_mode, beep, robot_id | 16 байт |
-| STM → RPi | `<Be??` | robot_id, напряжение кикера (fp16), ball_deep, ball_front | 7 байт |
+| RPi → STM | `<5eB??B` | vel_x, vel_y, w, dribbler, kicker [В] (fp16), kicker_mode, angle_mode, beep, robot_id | 16 байт |
+| STM → RPi | `<Be??` | robot_id, напряжение кикера [В] (fp16), ball_deep, ball_front | 7 байт |
 
 Если формат меняется, прошивку, раннер и teleop надо обновлять вместе: кадры другой длины не распознаются, и робот стоит.
+
+## Напряжение кикера
+
+Везде вольты на конденсаторе:
+
+- команда: `KickerAndDribbler.kicker_voltage` (uint32) — цель заряда 0..330 В, `0` — не заряжать. Раннер ограничивает её `KICKER_MAX_V` (330) и передаёт в UART как есть; прошивка ограничивает ещё раз;
+- `OldFormat.kicker_setting` остался уровнем 0..15: раннер переводит 1..15 в 100..330 В (`kicker_setting_to_voltage`);
+- телеметрия: `StrategyTelemetry.kicker_voltage` (float) — измеренное напряжение.
+
+Раньше `KickerAndDribbler` нёс уровень 0..15 в поле `kicker_setting`. Номер и тип поля те же, так что старая стратегия не сломается при разборе, но её 0..15 теперь означают вольты (робот почти не заряжается); после перегенерации proto имя поля в её коде надо поменять на `kicker_voltage` и слать вольты.
 
 ## beep
 

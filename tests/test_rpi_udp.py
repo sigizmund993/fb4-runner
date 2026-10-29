@@ -47,7 +47,7 @@ def make_command(vel_x=0.0, vel_y=0.0, angular_velocity=0.0) -> control_pb2.Robo
     cmd.new_format.speed_control.angular_velocity = angular_velocity
     kad = cmd.new_format.kicker_and_dribbler
     kad.kicker_mode = control_pb2.KickerMode.IDLE
-    kad.kicker_setting = 0
+    kad.kicker_voltage = 0
     kad.dribbler_setting = 0
     return cmd
 
