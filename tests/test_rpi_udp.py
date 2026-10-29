@@ -29,7 +29,9 @@ helpers.require_protobuf()
 import config  # noqa: E402
 from ssl_packet_package.protopy.spbunited.robot import control_pb2, telemetry_pb2  # noqa: E402
 
-HOST = os.environ.get("FB4_RPI_HOST") or f"fb4-{config.ROBOT_ID:02d}.local"
+# Runs on the PC, whose hostname is not fb4-NN: the robot under test is FB4_ROBOT_ID, 5 by default
+ROBOT_ID = config.ROBOT_ID if config.ROBOT_ID is not None else 5
+HOST = os.environ.get("FB4_RPI_HOST") or config.robot_hostname(ROBOT_ID)
 SEND_RATE_HZ = 50
 MIN_TELEMETRY_PER_S = 20  # RPi forwards one packet per MCU frame (~45-100/s)
 LED = "DATA_TRANSFER_1 (PG7)"
@@ -39,7 +41,7 @@ RPI_TEMP_RANGE_C = (10.0, 90.0)
 
 
 def make_command(vel_x=0.0, vel_y=0.0, angular_velocity=0.0) -> control_pb2.RobotCommand:
-    cmd = control_pb2.RobotCommand(robot_id=config.ROBOT_ID, robot_control_type=control_pb2.RobotControlType.NEW_FORMAT)
+    cmd = control_pb2.RobotCommand(robot_id=ROBOT_ID, robot_control_type=control_pb2.RobotControlType.NEW_FORMAT)
     cmd.new_format.speed_control.vel_x = vel_x
     cmd.new_format.speed_control.vel_y = vel_y
     cmd.new_format.speed_control.angular_velocity = angular_velocity
@@ -150,7 +152,7 @@ class RpiUdpTest(unittest.TestCase):
 
     def check_packet(self, packet: telemetry_pb2.RobotTelemetry):
         """Every field the runner fills must be present and plausible."""
-        self.assertEqual(packet.robot_id, config.ROBOT_ID, "RPi reports another robot id (FB4_ROBOT_ID?)")
+        self.assertEqual(packet.robot_id, ROBOT_ID, "RPi reports another robot id (FB4_ROBOT_ID?)")
         st = packet.strategy_telemetry
         for field in ("ball_in", "ball_deep", "kicker_voltage"):
             self.assertTrue(st.HasField(field), f"strategy_telemetry.{field} missing: {packet}")
@@ -172,7 +174,7 @@ class RpiUdpTest(unittest.TestCase):
         self.confirm(f"Did LED {LED} blink while sending and stop blinking during the pause?")
 
     def test_3_bad_packets_ignored(self):
-        for payload in (b"\xff\xff\xff", control_pb2.RobotCommand(robot_id=config.ROBOT_ID).SerializePartialToString()):
+        for payload in (b"\xff\xff\xff", control_pb2.RobotCommand(robot_id=ROBOT_ID).SerializePartialToString()):
             self.cmd_sock.sendto(payload, self.addr)
         packets = self.send_for(STOP, 1.0)
         self.assertGreaterEqual(len(packets), MIN_TELEMETRY_PER_S, "RPi stopped forwarding after bad packets")

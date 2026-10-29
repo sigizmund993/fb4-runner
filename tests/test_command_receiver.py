@@ -11,7 +11,7 @@ helpers.require_protobuf()
 
 import command_receiver  # noqa: E402
 from command_receiver import CommandReceiver, build_uart_command  # noqa: E402
-from protocol.uart import CMD_FMT, FrameParser  # noqa: E402
+from protocol.uart import CMD_FMT, NO_ROBOT_ID, FrameParser  # noqa: E402
 from ssl_packet_package.protopy.spbunited.robot import control_pb2  # noqa: E402
 from utils.auxiliary import aux  # noqa: E402
 from vision.vision import Robot  # noqa: E402
@@ -82,7 +82,7 @@ class BuildUartCommandTest(unittest.TestCase):
             make_robot(),
         )
         self.assertFalse(reached)
-        self.assertEqual(decode_uart(uart.to_bytes()), (1.0, -0.5, 2.0, 12.0, 8.0, 1, False))
+        self.assertEqual(decode_uart(uart.to_bytes()), (1.0, -0.5, 2.0, 12.0, 8.0, 1, False, False, NO_ROBOT_ID))
 
     def test_new_format_delta_angle(self):
         uart, _ = build_uart_command(new_format_cmd(delta_angle=0.5), make_robot())
@@ -98,7 +98,7 @@ class BuildUartCommandTest(unittest.TestCase):
         cmd.speed_control.vel_y = 0.75
         cmd.speed_control.angular_velocity = -1.0
         uart, _ = build_uart_command(cmd, make_robot())
-        self.assertEqual(decode_uart(uart.to_bytes()), (0.25, 0.75, -1.0, 0.0, 0.0, 0, False))
+        self.assertEqual(decode_uart(uart.to_bytes()), (0.25, 0.75, -1.0, 0.0, 0.0, 0, False, False, NO_ROBOT_ID))
 
     def test_kicker_and_dribbler_only(self):
         cmd = control_pb2.RobotCommand(robot_id=5, robot_control_type=CT.KICKER_AND_DRIBBLER)
@@ -220,6 +220,16 @@ class BuildUartCommandTest(unittest.TestCase):
         uart, _ = build_uart_command(new_format_cmd(vel_x=1.0), make_robot(seen=False))
         self.assertEqual(uart.vel_x, 1.0)
 
+    def test_beep_passes_through_any_command(self):
+        for cmd in (new_format_cmd(vel_x=1.0), global_coordinates_cmd(x=2.0), self.ricochet_cmd(x=2.0)):
+            name = CT.Name(cmd.robot_control_type)
+            with self.subTest(name):
+                self.assertFalse(build_uart_command(cmd, make_robot())[0].beep)
+                cmd.beep = True
+                self.assertTrue(decode_uart(build_uart_command(cmd, make_robot())[0].to_bytes())[7])
+                lost, _ = build_uart_command(cmd, make_robot(seen=False))
+                self.assertTrue(lost.beep, "a vision dropout stops the robot, not the beep")
+
     def test_unimplemented_types_send_stop(self):
         for control_type in (CT.COORDINATE_CONTROL, CT.CAP_VEL_AND_ACCEL):
             with self.subTest(control_type=control_type):
@@ -255,7 +265,7 @@ class CommandReceiverUdpTest(unittest.TestCase):
         self.send(new_format_cmd(vel_x=0.5, angular_velocity=1.5, kicker_mode=2, kicker=6).SerializeToString())
         self.update()
         uart, _ = build_uart_command(self.receiver.last_cmd, make_robot())
-        self.assertEqual(decode_uart(uart.to_bytes()), (0.5, 0.0, 1.5, 0.0, 6.0, 2, False))
+        self.assertEqual(decode_uart(uart.to_bytes()), (0.5, 0.0, 1.5, 0.0, 6.0, 2, False, False, NO_ROBOT_ID))
 
     def test_latest_command_wins(self):
         for vel in (0.25, 0.5, 1.0):

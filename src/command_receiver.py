@@ -7,7 +7,7 @@ from google.protobuf.message import DecodeError
 
 import config
 from ball_detector import BallDetector
-from protocol.uart import UartCommand
+from protocol.uart import NO_ROBOT_ID, UartCommand
 from ssl_packet_package.protopy.spbunited.robot import control_pb2
 from utils.auxiliary import aux
 from vision.vision_receiver import Team, VisionClient
@@ -128,7 +128,7 @@ def build_uart_command(
     Returns the command and whether the current target is reached and
     the stored command should be reset.
     """
-    uart_command = UartCommand()
+    uart_command = UartCommand(beep=cmd.beep)
     target_reached = False
     if cmd.robot_control_type in TARGET_COMMANDS and not robot.is_visible(
         time() if now is None else now, config.VISION_TIMEOUT_S
@@ -161,21 +161,28 @@ def build_uart_command(
     return uart_command, target_reached
 
 
-def command_receiver(client: VisionClient, ball_detector: BallDetector):
+def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id):
+    """robot_id: multiprocessing.Value shared with telemetry_transceiver, which may change it; -1 = unknown."""
     field = Field(client)
     receiver = CommandReceiver()
     ser = serial.Serial(config.UART_PORT, config.BAUD_RATE)
-    robot = field.get_robot(Team[config.ROBOT_TEAM.upper()], config.ROBOT_ID)
+    team = Team[config.ROBOT_TEAM.upper()]
+    current_id = None
     period = 1 / config.CMD_RATE_HZ
 
     next_tick = time()
     while True:
+        if robot_id.value != current_id:
+            current_id = robot_id.value
+            # Without an id there is no robot to look up in vision: a never seen one stops target commands
+            robot = field.get_robot(team, current_id) if current_id >= 0 else Robot(aux.Point(0, 0), 0, -1, team)
         field.update()
         receiver.update()
         ball_detector.update()
         uart_command, target_reached = build_uart_command(receiver.current_command(), robot, ball_detector.r_pos)
         if target_reached:
             receiver.last_cmd = control_pb2.RobotCommand()
+        uart_command.robot_id = current_id if current_id >= 0 else NO_ROBOT_ID
         ser.write(uart_command.to_bytes())
 
         next_tick += period

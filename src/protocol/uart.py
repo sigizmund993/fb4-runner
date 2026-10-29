@@ -7,9 +7,11 @@ import struct
 from dataclasses import dataclass
 
 SYNC_BYTE = 0xA5
+NO_ROBOT_ID = 0xFF  # robot_id in a command: the RPi doesn't know its id, the STM32 keeps its own
 
-# vel_x, vel_y, w, dribbler, kicker (fp16), kicker_mode (u8), angle_mode (bool)
-CMD_FMT = "<5eB?"
+# vel_x, vel_y, w, dribbler, kicker (fp16), kicker_mode (u8), angle_mode (bool), beep (bool),
+# robot_id (u8)
+CMD_FMT = "<5eB??B"
 CMD_FRAME_LEN = 1 + struct.calcsize(CMD_FMT) + 1
 
 # robot_id (u8), voltage (fp16), ball_deep (bool), ball_front (bool)
@@ -37,8 +39,12 @@ def pack_command(
     kicker: float,
     kicker_mode: int,
     angle_mode: bool,
+    beep: bool = False,
+    robot_id: int = NO_ROBOT_ID,
 ) -> bytes:
-    return make_frame(struct.pack(CMD_FMT, vel_x, vel_y, w, dribbler, kicker, kicker_mode, angle_mode))
+    return make_frame(
+        struct.pack(CMD_FMT, vel_x, vel_y, w, dribbler, kicker, kicker_mode, angle_mode, beep, robot_id)
+    )
 
 
 @dataclass
@@ -50,6 +56,8 @@ class UartCommand:
     kicker_voltage: float = 0.0
     kicker_mode: int = 0
     angle_mode: bool = True  # False - angular velocity, True - delta angle
+    beep: bool = False
+    robot_id: int = NO_ROBOT_ID
 
     def to_bytes(self) -> bytes:
         return pack_command(
@@ -60,6 +68,8 @@ class UartCommand:
             self.kicker_voltage,
             self.kicker_mode,
             self.angle_mode,
+            self.beep,
+            self.robot_id,
         )
 
 

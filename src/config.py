@@ -1,6 +1,25 @@
 import os
+import re
+import socket
 
-ROBOT_ID = int(os.environ.get("FB4_ROBOT_ID", 5))
+
+def hostname_robot_id() -> int | None:
+    """NN of the fb4-NN hostname the runner gives the RPi, None for any other hostname."""
+    match = re.fullmatch(r"fb4-(\d+)(\.local)?", socket.gethostname())
+    return int(match.group(1)) if match else None
+
+
+def robot_hostname(robot_id: int) -> str:
+    return f"fb4-{robot_id:02d}.local"
+
+
+# The robot id is agreed with the STM32 over UART (see telemetry_transceiver) and kept in the
+# hostname. None: not known yet, the STM32's id is taken.
+ROBOT_ID = int(os.environ["FB4_ROBOT_ID"]) if "FB4_ROBOT_ID" in os.environ else hostname_robot_id()
+MAX_ROBOT_ID = 15  # the firmware's id buttons wrap at 16
+# Take the STM32's id once it has differed from ours this long: on connect the STM32 takes our
+# id within a frame, so a lasting difference means it was changed with the buttons
+ROBOT_ID_ADOPT_S = 1.0
 ROBOT_TEAM = os.environ.get("FB4_ROBOT_TEAM", "yellow")
 
 BAUD_RATE = 115200

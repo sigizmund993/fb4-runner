@@ -17,9 +17,11 @@ class UartProtocolTest(unittest.TestCase):
     def test_command_frame_matches_firmware_layout(self):
         frame = pack_command(0.5, -0.25, 1.0, 3, 8, 2, True)
         self.assertEqual(len(frame), CMD_FRAME_LEN)
-        self.assertEqual(CMD_FRAME_LEN, 14)
-        self.assertEqual(frame.hex(), "a5003800b4003c0042004802011c")
+        self.assertEqual(CMD_FRAME_LEN, 16)
+        self.assertEqual(frame.hex(), "a5003800b4003c004200480201" "00" "ff" "e3")
         self.assertEqual(UartCommand(0.5, -0.25, 1.0, 3, 8, 2, True).to_bytes(), frame)
+        self.assertEqual(UartCommand(0.5, -0.25, 1.0, 3, 8, 2, True, beep=True, robot_id=7).to_bytes().hex(),
+                         "a5003800b4003c004200480201" "01" "07" "1a")
 
     def test_telemetry_parser(self):
         self.assertEqual(TEL_FRAME_LEN, 7)

@@ -1,4 +1,5 @@
 """Telemetry path: UART frames from the STM32 -> UDP protobuf broadcast."""
+import multiprocessing
 import select
 import socket
 import struct
@@ -8,6 +9,7 @@ import helpers
 
 helpers.require_protobuf()
 
+import config  # noqa: E402
 from protocol.uart import TEL_FMT, Telemetry, make_frame  # noqa: E402
 from ssl_packet_package.protopy.spbunited.robot import telemetry_pb2  # noqa: E402
 from telemetry_transceiver import TelemetryTransceiver, build_telemetry_packet  # noqa: E402
@@ -55,14 +57,24 @@ class FakeBallDetector:
         self.updates += 1
 
 
-def make_transceiver(ser, sock=None, ball_detector=None, rpi_temp=48.5):
+class FakeClock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def make_transceiver(ser, sock=None, ball_detector=None, rpi_temp=48.5, robot_id=7, renames=None, clock=None):
     return TelemetryTransceiver(
         ser,
         sock if sock is not None else FakeSocket(),
         ball_detector if ball_detector is not None else FakeBallDetector(),
-        robot_id=7,
+        robot_id=multiprocessing.Value("i", robot_id),
         dest=DEST,
         read_rpi_temp=lambda: rpi_temp,
+        rename=(renames if renames is not None else []).append,
+        clock=clock if clock is not None else FakeClock(),
     )
 
 
@@ -91,7 +103,7 @@ class BuildTelemetryPacketTest(unittest.TestCase):
 class TelemetryTransceiverTest(unittest.TestCase):
     def test_frame_is_forwarded(self):
         sock = FakeSocket()
-        tx = make_transceiver(FakeSerial(mcu_frame(voltage=20.0, ball_deep=True, ball_front=True)), sock)
+        tx = make_transceiver(FakeSerial(mcu_frame(robot_id=7, voltage=20.0, ball_deep=True, ball_front=True)), sock)
         self.assertEqual(tx.step(), 1)
         self.assertEqual(sock.sent[0][1], DEST)
         self.assertEqual(sock.packets()[0].robot_id, 7)
@@ -152,6 +164,64 @@ class TelemetryTransceiverTest(unittest.TestCase):
         first, second = sock.packets()
         self.assertEqual(first.raspberry_status.rpi_temp, 51.0)
         self.assertFalse(second.HasField("raspberry_status"))
+
+    def test_same_robot_id_keeps_hostname(self):
+        renames = []
+        tx = make_transceiver(FakeSerial(*[mcu_frame(robot_id=7)] * 3), renames=renames)
+        while tx.step():
+            pass
+        self.assertEqual((tx.robot_id.value, renames), (7, []))
+
+    def test_mcu_id_taken_once_it_lasts(self):
+        # The MCU's id was changed with the buttons: it keeps it, so the difference lasts
+        renames, clock, sock = [], FakeClock(), FakeSocket()
+        tx = make_transceiver(FakeSerial(*[mcu_frame(robot_id=3)] * 3), sock, renames=renames, clock=clock)
+        tx.step()
+        clock.now += config.ROBOT_ID_ADOPT_S * 0.9
+        tx.step()
+        self.assertEqual((tx.robot_id.value, renames), (7, []), "the MCU gets our id first")
+        clock.now += config.ROBOT_ID_ADOPT_S * 0.2
+        tx.step()
+        self.assertEqual((tx.robot_id.value, renames), (3, [3]))
+        self.assertEqual([p.robot_id for p in sock.packets()], [7, 7, 3])
+
+    def test_mcu_taking_our_id_is_not_a_change(self):
+        # On connect the MCU sends its old id until it gets ours
+        renames, clock = [], FakeClock()
+        tx = make_transceiver(FakeSerial(mcu_frame(robot_id=3), mcu_frame(robot_id=7)), renames=renames, clock=clock)
+        tx.step()
+        clock.now += config.ROBOT_ID_ADOPT_S * 0.5
+        tx.step()
+        clock.now += config.ROBOT_ID_ADOPT_S
+        tx.step()
+        self.assertEqual((tx.robot_id.value, renames), (7, []))
+
+    def test_mcu_id_change_restarts_the_wait(self):
+        # Clicking through ids with the buttons renames the RPi once, to the final id
+        renames, clock = [], FakeClock()
+        tx = make_transceiver(FakeSerial(*[mcu_frame(robot_id=i) for i in (8, 9, 9)]), renames=renames, clock=clock)
+        tx.step()
+        clock.now += config.ROBOT_ID_ADOPT_S * 0.8
+        tx.step()
+        clock.now += config.ROBOT_ID_ADOPT_S * 0.8
+        tx.step()
+        self.assertEqual((tx.robot_id.value, renames), (7, []))
+        tx.ser.chunks.append(mcu_frame(robot_id=9))
+        clock.now += config.ROBOT_ID_ADOPT_S * 0.3
+        tx.step()
+        self.assertEqual((tx.robot_id.value, renames), (9, [9]))
+
+    def test_unknown_id_takes_the_mcus_at_once(self):
+        renames, sock = [], FakeSocket()
+        tx = make_transceiver(FakeSerial(mcu_frame(robot_id=4)), sock, robot_id=-1, renames=renames)
+        tx.step()
+        self.assertEqual((tx.robot_id.value, renames, sock.packets()[0].robot_id), (4, [4], 4))
+
+    def test_invalid_mcu_id_is_ignored(self):
+        renames = []
+        tx = make_transceiver(FakeSerial(mcu_frame(robot_id=200)), robot_id=-1, renames=renames)
+        tx.step()
+        self.assertEqual((tx.robot_id.value, renames), (-1, []))
 
     def test_real_udp_delivery(self):
         listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
