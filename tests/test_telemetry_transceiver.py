@@ -4,6 +4,7 @@ import select
 import socket
 import struct
 import unittest
+from unittest import mock
 
 import helpers
 
@@ -222,6 +223,17 @@ class TelemetryTransceiverTest(unittest.TestCase):
         tx = make_transceiver(FakeSerial(mcu_frame(robot_id=200)), robot_id=-1, renames=renames)
         tx.step()
         self.assertEqual((tx.robot_id.value, renames), (-1, []))
+
+    def test_no_network_drops_packets_without_crashing(self):
+        class DownSocket(FakeSocket):
+            def sendto(self, data, addr):
+                raise OSError(101, "Network is unreachable")
+
+        tx = make_transceiver(FakeSerial(mcu_frame(robot_id=7), mcu_frame(robot_id=7)), DownSocket())
+        with mock.patch("builtins.print") as printed:
+            self.assertEqual(tx.step(), 1)
+            self.assertEqual(tx.step(), 1)
+        self.assertEqual(printed.call_count, 1, "reported once, not per packet")
 
     def test_real_udp_delivery(self):
         listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

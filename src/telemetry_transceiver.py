@@ -89,6 +89,7 @@ class TelemetryTransceiver:
         self.parser = FrameParser(TEL_FMT)
         self.last_rpi_status = 0.01
         self.id_mismatch: Optional[tuple[int, float]] = None  # (MCU id, since)
+        self.send_failing = False
 
     def sync_robot_id(self, mcu_id: int) -> None:
         if mcu_id == self.robot_id.value or mcu_id > config.MAX_ROBOT_ID:
@@ -121,8 +122,19 @@ class TelemetryTransceiver:
                 self.last_rpi_status = time()
             robot_id = self.robot_id.value if self.robot_id.value >= 0 else tel.robot_id
             packet = build_telemetry_packet(robot_id, tel, self.ball_detector.r_pos, rpi_temp)
-            self.sock.sendto(packet.SerializeToString(), self.dest)
+            self.send(packet.SerializeToString())
         return len(frames)
+
+    def send(self, data: bytes) -> None:
+        # The runner starts before Wi-Fi is up: until then there is no route for the broadcast
+        try:
+            self.sock.sendto(data, self.dest)
+        except OSError as e:
+            if not self.send_failing:
+                print(f"can't send telemetry yet ({e}), dropping it until the network is up")
+            self.send_failing = True
+            return
+        self.send_failing = False
 
 
 def telemetry_transceiver(ball_detector: BallDetector, robot_id):

@@ -80,3 +80,60 @@ make -C ssl_packet_package init build
 - После изменения `.proto` (например, нового поля `beep`) `build` нужно перезапустить и на RPi.
 - venv сабмодуля привязан к своему пути: после переноса каталога скрипты в `venv/bin` ссылаются на старый путь, и `build` падает с `protoc-gen-mypy: program not found`. Помогает `rm -rf ssl_packet_package/venv` и снова `make -C ssl_packet_package init`.
 - Версии в `requirements.txt` сабмодуля не закреплены. Свежий `mypy-protobuf` требует protobuf новее установленного (`VersionError: ... gencode 6.x runtime 5.x`), тогда: `ssl_packet_package/venv/bin/pip install mypy-protobuf==3.6.0`.
+
+## Автозапуск на RPi (systemd)
+
+`/etc/systemd/system/fb4-runner.service`:
+
+```ini
+[Unit]
+Description=fb4-runner
+# Не ждём network-online: раннер стартует параллельно с подключением Wi-Fi
+# (подписка на SSL vision повторяется, телеметрия без сети отбрасывается).
+# Ждём только UART к STM32 и сервис Hailo.
+After=fb4-firmware-updater.service hailort.service dev-ttyACM0.device
+Wants=dev-ttyACM0.device
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/fb4-runner
+ExecStart=/usr/bin/make run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Если `FB4_UART_PORT` не `/dev/ttyACM0`, поменяйте `dev-ttyACM0.device` на своё устройство.
+
+Обновление прошивки при загрузке — `fb4-firmware-updater.service` (`Type=oneshot`, `ExecStart=/usr/bin/make flash-fw`, `After=network-online.target`). Чтобы раннер ждал его, добавьте `fb4-firmware-updater.service` в `Wants=` раннера. Сейчас на fb4-05 он выключен.
+
+Время загрузки: `systemd-analyze`, `systemd-analyze blame`, `systemd-analyze critical-chain fb4-runner.service`.
+
+## Чейнджлог
+
+### 2026-10-29
+
+Код:
+
+- RICOCHET (тип команды 7): едет в точку с заданным углом, увидев мяч камерой — смещается к нему вбок, не поворачиваясь (`FB4_RICOCHET_CAM_GAIN`).
+- Команды с целью (GLOBAL_COORDINATES, RICOCHET) не сбрасываются по `CMD_TIMEOUT_S`, но останавливают робота, пока SSL vision его не видит (`VISION_TIMEOUT_S`).
+- UART: в команду добавлены `beep` и `robot_id`, кадр 16 байт; прошивка нужна не старше `feature-uart_for_rpi-v0.0.6`.
+- `RobotCommand.beep` — пищалка робота.
+- robot_id согласуется с STM32 и хранится в `.env` и hostname (см. «robot_id и hostname»).
+- Настройки в `.env` (шаблон `.env.example`, создаётся сам); `make flash-fw` берёт ветку и релиз прошивки оттуда, релиз — `latest`, номер или тег.
+- Напряжение кикера в вольтах 0..330: `KickerAndDribbler.kicker_setting` переименовано в `kicker_voltage` (стратегию надо обновить); `OldFormat` по-прежнему 0..15. Прошивка — от `v0.0.7`.
+- Быстрее старт: `make run`/`run-stream` не спят перед `main.py`, `BallDetector` сам ждёт `ball_shm`; раннер работает до появления сети (см. «Автозапуск»).
+
+Система на fb4-05 (не в репозитории; копии старых файлов лежат рядом с суффиксом `.bak-*`):
+
+- `/etc/network/interfaces`: eth0 — статический `192.168.0.100/24` без шлюза вместо DHCP, который ждал кабель 33 с при каждой загрузке (`interfaces.bak-dhcp-eth0`).
+- `/etc/wpa_supplicant/wpa_supplicant.conf`: убран `scan_ssid=1` (сети не скрытые) — лишние проходы сканирования (`.bak-scan-ssid`).
+- `/etc/dhcp/dhclient.conf`: `initial-interval 1;` — первый DHCP-запрос уходит до подключения к Wi-Fi и теряется, повтор теперь через ~1 с, а не ~6 (`.bak-initial-interval`).
+- `fb4-runner.service`: не ждёт `network-online.target` (старый — `/root/fb4-runner.service.bak`).
+- `fb4-firmware-updater.service` выключен: после перезагрузки ST-Link не мог подключиться к STM32.
+- Ноутбук разработчика назывался `fb4-05.local` (его переименовала старая версия раннера) и перехватывал имя робота; переименован обратно в `shmegulator`.
+
+Загрузка от питания до первой телеметрии: 28 с → 22 с после eth0 и `scan_ssid`. Остаток: ~11 с загрузчик RPi 5 до ядра, ~6 с ожидание DHCP (исправлено `initial-interval`), ~3,5 с старт раннера (теперь параллельно с Wi-Fi).
