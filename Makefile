@@ -63,14 +63,12 @@ compile-so:
 run: .env
 	@trap 'kill 0' SIGINT; \
 	./run.sh --no-stream > /dev/null& \
-	sleep 1;\
 	PYTHONPATH=. ./venv/bin/python src/main.py & \
 	wait
 run-stream: .env
 	echo "running in STREAM mode. run ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay rtsp://<RPI_IP>:8554/ball to watch stream"
 	@trap 'kill 0' SIGINT; \
 	./run.sh  > /dev/null& \
-	sleep 3;\
 	PYTHONPATH=. ./venv/bin/python src/main.py & \
 	wait
 test:
