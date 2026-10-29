@@ -77,10 +77,10 @@ test-hw:
 test-rpi:
 	FB4_RPI_TEST=1 $(if $(HOST),FB4_RPI_HOST=$(HOST)) $(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -p test_rpi_udp.py -v $(if $(K),-k $(K))
 
-# Latest CI firmware release of FB4_FW_BRANCH -> STM32 over ST-Link; skips if already flashed
-# make flash-fw [BRANCH=main] [TAG=...] [ARGS=--dry-run|--force]
+# CI firmware release (FB4_FW_BRANCH, FB4_FW_RELEASE in .env) -> STM32 over ST-Link; skips if already flashed
+# make flash-fw [BRANCH=main] [RELEASE=latest|5|<tag>] [ARGS=--dry-run|--force]
 flash-fw:
-	python3 src/utils/flash_firmware.py $(if $(BRANCH),--branch $(BRANCH)) $(if $(TAG),--tag $(TAG)) $(ARGS)
+	python3 src/utils/flash_firmware.py $(if $(BRANCH),--branch $(BRANCH)) $(if $(RELEASE),--release $(RELEASE)) $(ARGS)
 
 .PHONY: install install-deps install-driver install-mediamtx \
         compile-so \
