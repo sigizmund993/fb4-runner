@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 ENV_FILE = Path(os.environ.get("FB4_ENV_FILE", Path(__file__).resolve().parents[2] / ".env"))
+TEMPLATE = Path(__file__).resolve().parents[2] / ".env.example"
 
 
 def _parse_line(line: str) -> tuple[str, str] | None:
@@ -36,12 +37,12 @@ def get(key: str, default: str | None = None, path: Path = ENV_FILE) -> str | No
     return value if value else default
 
 
-def put(key: str, value: str, path: Path = ENV_FILE) -> None:
-    """Sets key in the file, keeping the other lines and comments; creates the file if needed."""
+def put(key: str, value: str, path: Path = ENV_FILE, template: Path = TEMPLATE) -> None:
+    """Sets key in the file, keeping the other lines and comments; a missing file starts as template."""
     try:
         lines = path.read_text().splitlines()
     except FileNotFoundError:
-        lines = []
+        lines = template.read_text().splitlines() if template.exists() else []
     new_line = f"{key}={value}"
     for i, line in enumerate(lines):
         parsed = _parse_line(line)

@@ -51,8 +51,15 @@ class EnvFileTest(unittest.TestCase):
         envfile.put("FB4_NEW", "3", self.path)
         self.assertEqual(envfile.read(self.path)["FB4_NEW"], "3")
         fresh = self.path.with_name("fresh.env")
-        envfile.put("FB4_ROBOT_ID", "4", fresh)
+        envfile.put("FB4_ROBOT_ID", "4", fresh, template=self.path.with_name("no_template"))
         self.assertEqual(fresh.read_text(), "FB4_ROBOT_ID=4\n")
+
+    def test_put_starts_from_template(self):
+        template = self.path.with_name(".env.example")
+        template.write_text("# robot id\nFB4_ROBOT_ID=\nFB4_ROBOT_TEAM=yellow\n")
+        fresh = self.path.with_name("fresh.env")
+        envfile.put("FB4_ROBOT_ID", "4", fresh, template=template)
+        self.assertEqual(fresh.read_text(), "# robot id\nFB4_ROBOT_ID=4\nFB4_ROBOT_TEAM=yellow\n")
 
 
 if __name__ == "__main__":

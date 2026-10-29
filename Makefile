@@ -56,13 +56,17 @@ compile-so:
 		yolo26_post.cpp -o libyolo26_post.so -lpthread
 
 
-run:
+# Settings of this robot; made from the template once, never overwritten
+.env:
+	cp .env.example .env
+
+run: .env
 	@trap 'kill 0' SIGINT; \
 	./run.sh --no-stream > /dev/null& \
 	sleep 1;\
 	PYTHONPATH=. ./venv/bin/python src/main.py & \
 	wait
-run-stream:
+run-stream: .env
 	echo "running in STREAM mode. run ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay rtsp://<RPI_IP>:8554/ball to watch stream"
 	@trap 'kill 0' SIGINT; \
 	./run.sh  > /dev/null& \
@@ -79,7 +83,7 @@ test-rpi:
 
 # CI firmware release (FB4_FW_BRANCH, FB4_FW_RELEASE in .env) -> STM32 over ST-Link; skips if already flashed
 # make flash-fw [BRANCH=main] [RELEASE=latest|5|<tag>] [ARGS=--dry-run|--force]
-flash-fw:
+flash-fw: .env
 	python3 src/utils/flash_firmware.py $(if $(BRANCH),--branch $(BRANCH)) $(if $(RELEASE),--release $(RELEASE)) $(ARGS)
 
 .PHONY: install install-deps install-driver install-mediamtx \
