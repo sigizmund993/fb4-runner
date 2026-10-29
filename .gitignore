@@ -9,3 +9,5 @@ datastream
 metadata
 *.crt
 *.key
+*.so
+gstshark*

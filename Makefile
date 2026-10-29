@@ -5,9 +5,6 @@ SO      ?= ./libyolo26_post.so
 MEDIAMTX ?= /root/mediamtx
 MEDIAMTX_CFG ?= /root/mediamtx.yml
 
-# ---------------------------------------------------------------------------
-# Установка всего стека (только то что реально нужно)
-# ---------------------------------------------------------------------------
 install-deps:
 	# GStreamer + libcamera
 	sudo apt install -y \
@@ -42,53 +39,14 @@ install-driver:
 	# sudo apt install hailort-pcie-driver=4.23.0
 
 install-mediamtx:
-	# Скачать mediaMTX (RTSP сервер)
 	cd /root && \
-		LATEST=$$(curl -sI https://github.com/bluenviron/mediamtx/releases/latest \
-			| grep location | grep -o 'v[0-9.]*' | tr -d '\r') && \
-		wget -q "https://github.com/bluenviron/mediamtx/releases/download/$${LATEST}/mediamtx_$${LATEST}_linux_arm64.tar.gz" && \
-		tar -xzf mediamtx_$${LATEST}_linux_arm64.tar.gz && \
-		rm mediamtx_$${LATEST}_linux_arm64.tar.gz
-	cp mediamtx.yml /root/mediamtx.yml
+	LATEST=$$(curl -s https://github.com | grep -oP '"tag_name": "\K[^"]+') && \
+	wget -q "https://github.com{LATEST}/mediamtx_$${LATEST}_linux_arm64.tar.gz" && \
+	tar -xzf mediamtx_$${LATEST}_linux_arm64.tar.gz && \
+	rm mediamtx_$${LATEST}_linux_arm64.tar.gz
+
 
 install: install-deps install-driver install-mediamtx
-
-# ---------------------------------------------------------------------------
-# Проверка что всё работает
-# ---------------------------------------------------------------------------
-check:
-	@echo "=== Hailo device ==="
-	hailortcli fw-control identify
-	@echo ""
-	@echo "=== GStreamer Hailo plugins ==="
-	@gst-inspect-1.0 hailonet   2>&1 | head -2
-	@gst-inspect-1.0 hailofilter 2>&1 | head -2
-	@gst-inspect-1.0 hailooverlay 2>&1 | head -2
-	@gst-inspect-1.0 libcamerasrc 2>&1 | head -2
-	@gst-inspect-1.0 jpegenc      2>&1 | head -2
-	@gst-inspect-1.0 rtpjpegpay   2>&1 | head -2
-	@echo ""
-	@echo "=== Camera ==="
-	rpicam-hello --list-cameras 2>&1 | head -5
-	@echo ""
-	@echo "=== Driver ==="
-	ls -la /dev/hailo*
-
-# ---------------------------------------------------------------------------
-# Сборка
-# ---------------------------------------------------------------------------
-compile:
-	# Постпроцессинг .so (YOLO26n decode + NMS + консоль)
-	g++ -shared -fPIC -O3 \
-		-I/usr/include/hailo \
-		-I/usr/include/hailo/tappas \
-		yolo26_post.cpp -o libyolo26_post.so -lpthread
-	# C++ детектор (опционально)
-	g++ -std=c++17 -O2 \
-		$$(pkg-config --cflags opencv4) \
-		main.cpp -o ball_detector_cpp \
-		$$(pkg-config --libs opencv4) \
-		-L/usr/lib/aarch64-linux-gnu -lhailort -lpthread
 
 compile-so:
 	# Только .so (быстро, без opencv)
@@ -97,46 +55,33 @@ compile-so:
 		-I/usr/include/hailo/tappas \
 		yolo26_post.cpp -o libyolo26_post.so -lpthread
 
-# ---------------------------------------------------------------------------
-# Запуск
-# ---------------------------------------------------------------------------
+
 run:
-	# GStreamer pipeline без стрима — только консольный вывод
-	./run.sh --no-stream $(HEF) $(SO)
-
+	@trap 'kill 0' SIGINT; \
+	./run.sh --no-stream > /dev/null& \
+	sleep 1;\
+	PYTHONPATH=. ./venv/bin/python src/main.py & \
+	wait
 run-stream:
-	# GStreamer pipeline + RTSP MJPEG стрим через mediaMTX
-	# Смотреть: rtsp://<IP>:8554/ball
-	MEDIAMTX_BIN=$(MEDIAMTX) ./run.sh $(HEF) $(SO)
+	echo "running in STREAM mode. run ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay rtsp://<RPI_IP>:8554/ball to watch stream"
+	@trap 'kill 0' SIGINT; \
+	./run.sh  > /dev/null& \
+	sleep 3;\
+	PYTHONPATH=. ./venv/bin/python src/main.py & \
+	wait
+test:
+	$(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -v
+test-hw:
+	FB4_HW_TEST=1 $(if $(PORT),FB4_UART_PORT=$(PORT)) $(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -p test_uart_hardware.py -v $(if $(K),-k $(K))
 
-run-stream-hq:
-	# Высокое качество JPEG
-	MEDIAMTX_BIN=$(MEDIAMTX) ./run.sh --quality=90 $(HEF) $(SO)
+test-rpi:
+	FB4_RPI_TEST=1 $(if $(HOST),FB4_RPI_HOST=$(HOST)) $(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -p test_rpi_udp.py -v $(if $(K),-k $(K))
 
-run-python:
-	# Старый Python детектор (запасной вариант, с MJPEG HTTP)
-	python3 detect.py --model $(HEF) --so $(SO)
-
-run-cpp:
-	# Старый C++ детектор
-	LD_LIBRARY_PATH=/usr/lib:/usr/lib/aarch64-linux-gnu ./ball_detector_cpp
-
-# ---------------------------------------------------------------------------
-# Отладка
-# ---------------------------------------------------------------------------
-debug-pipeline:
-	# Запуск с GStreamer tracers — показывает время каждого элемента
-	GST_TRACERS="proctime;framerate" GST_DEBUG="GST_TRACER:7" \
-		./run.sh --no-stream $(HEF) $(SO) 2>&1 | grep -E "proctime|framerate|hailonet|hailofilter"
-
-debug-camera:
-	# Проверка камеры без inference
-	gst-launch-1.0 libcamerasrc ! \
-		videoconvert ! \
-		"video/x-raw,format=RGB,width=1296,height=972,framerate=30/1" ! \
-		fakesink sync=false
+# Latest CI firmware release of FB4_FW_BRANCH -> STM32 over ST-Link; skips if already flashed
+# make flash-fw [BRANCH=main] [TAG=...] [ARGS=--dry-run|--force]
+flash-fw:
+	python3 src/utils/flash_firmware.py $(if $(BRANCH),--branch $(BRANCH)) $(if $(TAG),--tag $(TAG)) $(ARGS)
 
 .PHONY: install install-deps install-driver install-mediamtx \
-        check compile compile-so \
-        run run-stream run-stream-hq run-python run-cpp \
-        debug-pipeline debug-camera
+        compile-so \
+        run run-stream test test-hw test-rpi flash-fw 

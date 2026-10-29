@@ -11,8 +11,8 @@
 #   VLC:    rtsp://<RPI_IP>:8554/ball
 #   ffplay: ffplay rtsp://<RPI_IP>:8554/ball
 
-HEF="/root/rpi_fb4-runner/10_hours_brainrot.hef"
-SO="/root/rpi_fb4-runner/libyolo26_post.so"
+HEF="/root/fb4-runner/10_hours_brainrot.hef"
+SO="/root/fb4-runner/libyolo26_post.so"
 MEDIAMTX="/root/mediamtx"
 MEDIAMTX_CFG="/root/mediamtx.yml"
 STREAM=1
@@ -34,6 +34,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+PREFIX=""
+
 if [ "$STREAM" -eq 1 ]; then
     echo "[INFO] Starting mediaMTX..."
     "$MEDIAMTX" "$MEDIAMTX_CFG" &
@@ -43,13 +45,15 @@ if [ "$STREAM" -eq 1 ]; then
     IP=$(hostname -I | awk '{print $1}')
     echo "[INFO] Stream: rtsp://${IP}:8554/ball"
 
-    # GStreamer пушит MJPEG в mediaMTX через RTSP RECORD
+    PREFIX="rtspclientsink name=sink location=rtsp://127.0.0.1:8554/ball protocols=tcp latency=0"
+
     SINK="queue leaky=downstream max-size-buffers=2 ! \
 hailooverlay ! \
 videoconvert ! \
+video/x-raw,format=I420 ! \
 jpegenc quality=${QUALITY} ! \
-rtpjpegpay ! \
-rtspclientsink location=rtsp://127.0.0.1:8554/ball protocols=tcp"
+queue leaky=downstream max-size-buffers=2 ! \
+sink."
 else
     SINK="fakesink sync=false"
     echo "[INFO] No-stream mode — console only"
@@ -60,19 +64,19 @@ echo "[INFO] SO:      $SO"
 echo "[INFO] Quality: $QUALITY"
 echo ""
 
-gst-launch-1.0 -e \
-    libcamerasrc ! \
-    videoconvert ! \
-    "video/x-raw,format=RGB,width=1296,height=972,framerate=30/1" ! \
-    videoscale ! \
-    "video/x-raw,format=RGB,width=1280,height=960" ! \
-    queue leaky=downstream max-size-buffers=2 ! \
-    hailonet \
-        hef-path="$HEF" \
-        batch-size=1 \
-        scheduling-algorithm=1 ! \
-    queue leaky=downstream max-size-buffers=2 ! \
-    hailofilter \
-        so-path="$SO" \
-        qos=false ! \
-    $SINK
+gst-launch-1.0 -e $PREFIX \
+libcamerasrc ! \
+"video/x-raw,format=NV12,width=1280,height=960,framerate=30/1" ! \
+videoconvert ! \
+"video/x-raw,format=RGB" ! \
+queue leaky=upstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! \
+hailonet \
+hef-path="$HEF" \
+batch-size=1 \
+scheduling-algorithm=1 ! \
+queue leaky=upstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! \
+hailofilter \
+so-path="$SO" \
+qos=false ! \
+$SINK
+
