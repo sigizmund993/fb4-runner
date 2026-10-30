@@ -47,4 +47,4 @@ SHM_NAME = "ball_shm"
 # RICOCHET: lateral speed per metre of ball offset seen by the onboard camera
 # (ball_detector.r_pos.y, robot frame: y left). Positive: the robot moves towards the ball.
 RICOCHET_CAM_GAIN = float(envfile.get("FB4_RICOCHET_CAM_GAIN", "5.0"))  # [1/s]
-RICOCHET_MAX_VEL = 2.0  # [m/s]
+RICOCHET_MAX_VEL = 3.0  # [m/s]
