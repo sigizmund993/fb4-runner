@@ -124,10 +124,18 @@ def hold_heading(uart_command: UartCommand) -> None:
     uart_command.angle_mode = True
 
 
-def follow_ball(ball: Optional[aux.Point], uart_command: UartCommand) -> None:
-    """Sideways speed towards the ball seen by the onboard camera; both speeds limited."""
+def predicted_hit_y(ball: aux.Point, ball_vel: Optional[aux.Point]) -> float:
+    """Robot-frame y where the ball will reach the kicker face; its current y unless it approaches."""
+    if ball_vel is None or ball_vel.x > -config.RICOCHET_MIN_APPROACH_VEL:
+        return ball.y
+    t = max(ball.x - config.KICKER_FACE_X, 0.0) / -ball_vel.x
+    return ball.y + ball_vel.y * min(t, config.RICOCHET_MAX_PREDICT_S)
+
+
+def follow_ball(ball: Optional[aux.Point], ball_vel: Optional[aux.Point], uart_command: UartCommand) -> None:
+    """Sideways speed towards where the ball seen by the onboard camera will hit the kicker; both speeds limited."""
     if ball is not None:
-        uart_command.vel_y = config.RICOCHET_CAM_GAIN * ball.y
+        uart_command.vel_y = config.RICOCHET_CAM_GAIN * predicted_hit_y(ball, ball_vel)
     uart_command.vel_x = aux.minmax(uart_command.vel_x, config.RICOCHET_MAX_VEL)
     uart_command.vel_y = aux.minmax(uart_command.vel_y, config.RICOCHET_MAX_VEL)
 
@@ -166,6 +174,7 @@ def ricochet(
     ball: Optional[aux.Point],
     uart_command: UartCommand,
     angle: float = 0.0,
+    ball_vel: Optional[aux.Point] = None,
 ) -> None:
     """Holds angle and drives to the target; once the camera sees the ball,
     the sideways speed follows the ball instead, so it bounces off at that angle.
@@ -174,13 +183,17 @@ def ricochet(
         go_to_point_ignore(robot, aux.Point(cmd.x, cmd.y), angle, uart_command)
     else:
         hold_heading(uart_command)
-    follow_ball(ball, uart_command)
+    follow_ball(ball, ball_vel, uart_command)
     if cmd.HasField("kicker_and_dribbler"):
         apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
 
 
 def catch_ball(
-    cmd: control_pb2.CatchBall, robot: Optional[Robot], ball: Optional[aux.Point], uart_command: UartCommand
+    cmd: control_pb2.CatchBall,
+    robot: Optional[Robot],
+    ball: Optional[aux.Point],
+    uart_command: UartCommand,
+    ball_vel: Optional[aux.Point] = None,
 ) -> None:
     """Turns to the angle and doesn't drive forward; the sideways speed follows the ball seen by the camera.
     robot is None without vision: then it keeps its current heading."""
@@ -189,7 +202,7 @@ def catch_ball(
         uart_command.angle_mode = True
     else:
         hold_heading(uart_command)
-    follow_ball(ball, uart_command)
+    follow_ball(ball, ball_vel, uart_command)
     apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
 
 
@@ -199,10 +212,12 @@ def build_uart_command(
     ball: Optional[aux.Point] = None,
     now: Optional[float] = None,
     field: Optional[Field] = None,
+    ball_vel: Optional[aux.Point] = None,
 ) -> tuple[UartCommand, bool]:
     """Translates a protobuf command into a UART command.
 
-    ball is the ball seen by the onboard camera, in the robot frame [m], or None.
+    ball is the ball seen by the onboard camera, in the robot frame [m], or None; ball_vel its
+    velocity relative to the robot [m/s].
     field (SSL vision: ball velocity, geometry) lets RICOCHET without angle aim at the goal.
     Target commands send a stop while vision doesn't see the robot (its position would be stale)
     and resume when it is seen again; RICOCHET and CATCH_BALL then keep the heading and only follow
@@ -215,9 +230,9 @@ def build_uart_command(
     now = time() if now is None else now
     if cmd.robot_control_type in TARGET_COMMANDS and not robot.is_visible(now, config.VISION_TIMEOUT_S):
         if cmd.robot_control_type == control_pb2.RobotControlType.RICOCHET:
-            ricochet(cmd.ricochet, None, ball, uart_command)
+            ricochet(cmd.ricochet, None, ball, uart_command, ball_vel=ball_vel)
         elif cmd.robot_control_type == control_pb2.RobotControlType.CATCH_BALL:
-            catch_ball(cmd.catch_ball, None, ball, uart_command)
+            catch_ball(cmd.catch_ball, None, ball, uart_command, ball_vel)
         return uart_command, False
     match cmd.robot_control_type:
         case control_pb2.RobotControlType.NEW_FORMAT:
@@ -239,10 +254,11 @@ def build_uart_command(
                 target_reached = True
         case control_pb2.RobotControlType.RICOCHET:
             # Never "reached": the robot waits at the target for the ball
-            ricochet(cmd.ricochet, robot, ball, uart_command, ricochet_angle(cmd.ricochet, robot, field, now))
+            angle = ricochet_angle(cmd.ricochet, robot, field, now)
+            ricochet(cmd.ricochet, robot, ball, uart_command, angle, ball_vel)
         case control_pb2.RobotControlType.CATCH_BALL:
             # Never "reached": the robot waits for the ball until the strategy sends another command
-            catch_ball(cmd.catch_ball, robot, ball, uart_command)
+            catch_ball(cmd.catch_ball, robot, ball, uart_command, ball_vel)
         case control_pb2.RobotControlType.CAP_VEL_AND_ACCEL:
             # TODO: implement
             pass
@@ -268,7 +284,7 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
         receiver.update()
         ball_detector.update()
         uart_command, target_reached = build_uart_command(
-            receiver.current_command(), robot, ball_detector.r_pos, field=field
+            receiver.current_command(), robot, ball_detector.r_pos, field=field, ball_vel=ball_detector.r_vel
         )
         if target_reached:
             receiver.last_cmd = control_pb2.RobotCommand()
