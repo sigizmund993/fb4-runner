@@ -9,6 +9,7 @@ class Ball:
     def __init__(self, pos: aux.Point):
         self.pos = pos
         self.vel = aux.Point(0, 0)
+        self.last_update = float("-inf")  # time() of the last vision detection; never seen yet
         self.filter_x = AlphaBetaFilter(0.6, 0.15, self.pos.x)
         self.filter_y = AlphaBetaFilter(0.6, 0.15, self.pos.y)
 
@@ -17,6 +18,10 @@ class Ball:
         self.filter_y.update(pos.y)
         self.vel = aux.Point(self.filter_x.dx, self.filter_y.dx)
         self.pos = aux.Point(self.filter_x.x, self.filter_y.x)
+        self.last_update = time()
+
+    def is_visible(self, now: float, timeout: float) -> bool:
+        return now - self.last_update <= timeout
 
 
 class Robot:
