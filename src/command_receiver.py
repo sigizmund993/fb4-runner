@@ -114,10 +114,17 @@ def go_to_point_ignore(robot: Robot, tgt_pos: aux.Point, tgt_ang: float, uart_co
     uart_command.angle_mode = True
 
 
-def ricochet(cmd: control_pb2.Ricochet, robot: Robot, ball: Optional[aux.Point], uart_command: UartCommand) -> None:
+def ricochet(
+    cmd: control_pb2.Ricochet, robot: Optional[Robot], ball: Optional[aux.Point], uart_command: UartCommand
+) -> None:
     """Holds the target angle and drives to the target; once the camera sees the ball,
-    the sideways speed follows the ball instead, so it bounces off at the set angle."""
-    go_to_point_ignore(robot, aux.Point(cmd.x, cmd.y), cmd.angle, uart_command)
+    the sideways speed follows the ball instead, so it bounces off at the set angle.
+    robot is None without vision: then it stays where it is, keeps its heading and only follows the ball."""
+    if robot is not None:
+        go_to_point_ignore(robot, aux.Point(cmd.x, cmd.y), cmd.angle, uart_command)
+    else:
+        uart_command.w = 0
+        uart_command.angle_mode = True
     if ball is not None:
         uart_command.vel_y = config.RICOCHET_CAM_GAIN * ball.y
     uart_command.vel_x = aux.minmax(uart_command.vel_x, config.RICOCHET_MAX_VEL)
@@ -133,7 +140,7 @@ def build_uart_command(
 
     ball is the ball seen by the onboard camera, in the robot frame [m], or None.
     Target commands send a stop while vision doesn't see the robot (its position would be stale)
-    and resume when it is seen again.
+    and resume when it is seen again; RICOCHET then only follows the ball with the onboard camera.
     Returns the command and whether the current target is reached and
     the stored command should be reset.
     """
@@ -142,6 +149,8 @@ def build_uart_command(
     if cmd.robot_control_type in TARGET_COMMANDS and not robot.is_visible(
         time() if now is None else now, config.VISION_TIMEOUT_S
     ):
+        if cmd.robot_control_type == control_pb2.RobotControlType.RICOCHET:
+            ricochet(cmd.ricochet, None, ball, uart_command)
         return uart_command, False
     match cmd.robot_control_type:
         case control_pb2.RobotControlType.NEW_FORMAT:

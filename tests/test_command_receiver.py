@@ -220,11 +220,27 @@ class BuildUartCommandTest(unittest.TestCase):
                 seen = robot.last_update
                 moving, _ = build_uart_command(cmd, robot, now=seen + vision_timeout * 0.5)
                 self.assertGreater(moving.vel_x, 0)
-                lost, reached = build_uart_command(cmd, robot, ball=aux.Point(0.3, 0.2), now=seen + vision_timeout * 2)
+                lost, reached = build_uart_command(cmd, robot, now=seen + vision_timeout * 2)
                 self.assertFalse(reached, "the target must survive a vision dropout")
                 self.assertEqual((lost.vel_x, lost.vel_y, lost.w), (0, 0, 0))
                 never_seen, _ = build_uart_command(cmd, make_robot(seen=False))
                 self.assertEqual((never_seen.vel_x, never_seen.vel_y, never_seen.w), (0, 0, 0))
+
+    def test_ricochet_without_vision_follows_ball_in_place(self):
+        gain = command_receiver.config.RICOCHET_CAM_GAIN
+        cmd = self.ricochet_cmd(x=2.0, angle=1.0, kicker_mode=control_pb2.KickerMode.AUTOKICK_MOMENTUM)
+        uart, reached = build_uart_command(cmd, make_robot(seen=False), ball=aux.Point(0.3, 0.2))
+        self.assertFalse(reached)
+        self.assertAlmostEqual(uart.vel_y, gain * 0.2, places=6)
+        self.assertEqual((uart.vel_x, uart.w, uart.angle_mode), (0, 0, True), "no driving and no turning blind")
+        self.assertEqual((uart.kicker_mode, uart.kicker_voltage, uart.dribbler_speed), (5, 9, 3))
+        far, _ = build_uart_command(cmd, make_robot(seen=False), ball=aux.Point(0.3, -5.0))
+        self.assertEqual(far.vel_y, -command_receiver.config.RICOCHET_MAX_VEL)
+
+    def test_global_coordinates_without_vision_keep_kicker_off(self):
+        cmd = global_coordinates_cmd(x=2.0)
+        uart, _ = build_uart_command(cmd, make_robot(seen=False), ball=aux.Point(0.3, 0.2))
+        self.assertEqual((uart.vel_x, uart.vel_y, uart.w, uart.kicker_mode), (0, 0, 0, 0))
 
     def test_speed_commands_ignore_vision(self):
         uart, _ = build_uart_command(new_format_cmd(vel_x=1.0), make_robot(seen=False))
