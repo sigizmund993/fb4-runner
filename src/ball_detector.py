@@ -22,8 +22,8 @@ class BallDetector:
             str(CALIB_DIR / "camera_params_fisheye.npz"),
             str(CALIB_DIR / "homography_matrix.npy"),
         )
-        self.p_pos: Optional[aux.Point] = None
-        self.r_pos: Optional[aux.Point] = None
+        self.p_pos: Optional[aux.Point] = None  # [px]
+        self.r_pos: Optional[aux.Point] = None  # [m], robot frame: x forward, y left
 
     @staticmethod
     def _attach_shm() -> SharedMemory:
@@ -44,4 +44,9 @@ class BallDetector:
             self.p_pos = None
         else:
             self.p_pos = aux.Point(cx, cy)
-            self.r_pos = self.coord_converter.get_coords(self.p_pos)
+            self.r_pos = calib_to_robot_frame(self.coord_converter.get_coords(self.p_pos))
+
+
+def calib_to_robot_frame(p: aux.Point) -> aux.Point:
+    """The calibration (homography_matrix.npy) has y to the right of the image; the robot's y is left."""
+    return aux.Point(p.x, -p.y)
