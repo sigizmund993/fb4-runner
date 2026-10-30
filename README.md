@@ -20,7 +20,7 @@ make flash-fw     # залить на STM32 релиз прошивки из CI 
 | `FB4_ROBOT_ID` | из hostname `fb4-NN` | id робота 0..15, раннер сам переписывает его (см. ниже) |
 | `FB4_ROBOT_TEAM` | `yellow` | `yellow` или `blue`, для поиска робота в SSL vision |
 | `FB4_UART_PORT` | `/dev/ttyACM0` | порт STM32 |
-| `FB4_RICOCHET_CAM_GAIN` | `5.0` | RICOCHET: поперечная скорость [1/с] на метр смещения мяча |
+| `FB4_RICOCHET_CAM_GAIN` | `5.0` | RICOCHET и CATCH_BALL: поперечная скорость [1/с] на метр смещения мяча |
 | `FB4_FW_REPO` | `SPbUnited/FootBot4_Firmware` | репозиторий прошивки |
 | `FB4_FW_BRANCH` | `feature/uart_for_rpi` | ветка прошивки |
 | `FB4_FW_RELEASE` | `latest` | `latest`, номер релиза ветки (`5` или `v0.0.5`) или полный тег |
@@ -64,7 +64,7 @@ Id робота согласуется с STM32 по UART и хранится в
 - Если hostname не совпадает с id, RPi переименовывается при старте.
 - RPi шлёт свой id в каждой команде. STM32 берёт его сразу и сохраняет в EEPROM, кроме случая, когда id на роботе только что поменяли кнопками.
 - `telemetry_transceiver` берёт id STM32, если тот отличается от своего дольше `ROBOT_ID_ADOPT_S` (1 с), записывает его в `.env` (иначе после перезапуска старый id из `.env` вернулся бы на STM32) и меняет hostname (`hostnamectl`, `/etc/hosts`, перезапуск avahi; нужен root). Если `FB4_ROBOT_ID` задан в окружении, а не в `.env`, после перезапуска победит он. Задержка даёт STM32 время взять id RPi при подключении и не переименовывает RPi на каждом нажатии кнопки, пока id перебирают.
-- Текущий id делят процессы через `multiprocessing.Value` (`-1` — неизвестен). `command_receiver` подхватывает новый id на лету: шлёт его в UART и ищет в SSL vision робота с этим id. Пока id неизвестен, робот считается невидимым в vision: GLOBAL_COORDINATES стоит, RICOCHET только следит за мячом камерой.
+- Текущий id делят процессы через `multiprocessing.Value` (`-1` — неизвестен). `command_receiver` подхватывает новый id на лету: шлёт его в UART и ищет в SSL vision робота с этим id. Пока id неизвестен, робот считается невидимым в vision: GLOBAL_COORDINATES стоит, RICOCHET и CATCH_BALL только следят за мячом камерой.
 - После смены id стратегия и teleop должны обращаться к новому `fb4-NN.local`.
 
 Ограничение: если поменять id кнопками и сохранить с перезагрузкой STM32, пока раннер не запущен, после подключения победит id RPi.
@@ -113,6 +113,11 @@ WantedBy=multi-user.target
 Время загрузки: `systemd-analyze`, `systemd-analyze blame`, `systemd-analyze critical-chain fb4-runner.service`.
 
 ## Чейнджлог
+
+### 2026-10-30
+
+- CATCH_BALL (тип команды 8, поле `catch_ball`): `angle` [рад, глобальный] и обязательный `kicker_and_dribbler`. Робот поворачивается на угол по SSL vision, вперёд не едет, вбок смещается за мячом с камеры (как RICOCHET без vision). Без vision держит текущий курс. Как и RICOCHET, команда не сбрасывается по `CMD_TIMEOUT_S` и не завершается сама — до следующей команды стратегии.
+- Знак y мяча с камеры: калибровка даёт y вправо, теперь `BallDetector.r_pos` в системе робота (y влево). Раньше рикошет уводил робота от мяча. У `ball_position` в телеметрии y сменил знак.
 
 ### 2026-10-29
 

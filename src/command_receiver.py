@@ -16,7 +16,11 @@ from vision.vision import Field, Robot
 
 # Commands with their own end (a target): one packet is enough, they don't expire when the
 # strategy goes silent. They run until reached or replaced.
-TARGET_COMMANDS = (control_pb2.RobotControlType.GLOBAL_COORDINATES, control_pb2.RobotControlType.RICOCHET)
+TARGET_COMMANDS = (
+    control_pb2.RobotControlType.GLOBAL_COORDINATES,
+    control_pb2.RobotControlType.RICOCHET,
+    control_pb2.RobotControlType.CATCH_BALL,
+)
 
 
 class CommandReceiver:
@@ -114,6 +118,19 @@ def go_to_point_ignore(robot: Robot, tgt_pos: aux.Point, tgt_ang: float, uart_co
     uart_command.angle_mode = True
 
 
+def hold_heading(uart_command: UartCommand) -> None:
+    uart_command.w = 0
+    uart_command.angle_mode = True
+
+
+def follow_ball(ball: Optional[aux.Point], uart_command: UartCommand) -> None:
+    """Sideways speed towards the ball seen by the onboard camera; both speeds limited."""
+    if ball is not None:
+        uart_command.vel_y = config.RICOCHET_CAM_GAIN * ball.y
+    uart_command.vel_x = aux.minmax(uart_command.vel_x, config.RICOCHET_MAX_VEL)
+    uart_command.vel_y = aux.minmax(uart_command.vel_y, config.RICOCHET_MAX_VEL)
+
+
 def ricochet(
     cmd: control_pb2.Ricochet, robot: Optional[Robot], ball: Optional[aux.Point], uart_command: UartCommand
 ) -> None:
@@ -123,14 +140,24 @@ def ricochet(
     if robot is not None:
         go_to_point_ignore(robot, aux.Point(cmd.x, cmd.y), cmd.angle, uart_command)
     else:
-        uart_command.w = 0
-        uart_command.angle_mode = True
-    if ball is not None:
-        uart_command.vel_y = config.RICOCHET_CAM_GAIN * ball.y
-    uart_command.vel_x = aux.minmax(uart_command.vel_x, config.RICOCHET_MAX_VEL)
-    uart_command.vel_y = aux.minmax(uart_command.vel_y, config.RICOCHET_MAX_VEL)
+        hold_heading(uart_command)
+    follow_ball(ball, uart_command)
     if cmd.HasField("kicker_and_dribbler"):
         apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
+
+
+def catch_ball(
+    cmd: control_pb2.CatchBall, robot: Optional[Robot], ball: Optional[aux.Point], uart_command: UartCommand
+) -> None:
+    """Turns to the angle and doesn't drive forward; the sideways speed follows the ball seen by the camera.
+    robot is None without vision: then it keeps its current heading."""
+    if robot is not None:
+        uart_command.w = aux.wind_down_angle(cmd.angle - robot.ang)
+        uart_command.angle_mode = True
+    else:
+        hold_heading(uart_command)
+    follow_ball(ball, uart_command)
+    apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
 
 
 def build_uart_command(
@@ -140,7 +167,8 @@ def build_uart_command(
 
     ball is the ball seen by the onboard camera, in the robot frame [m], or None.
     Target commands send a stop while vision doesn't see the robot (its position would be stale)
-    and resume when it is seen again; RICOCHET then only follows the ball with the onboard camera.
+    and resume when it is seen again; RICOCHET and CATCH_BALL then keep the heading and only follow
+    the ball with the onboard camera.
     Returns the command and whether the current target is reached and
     the stored command should be reset.
     """
@@ -151,6 +179,8 @@ def build_uart_command(
     ):
         if cmd.robot_control_type == control_pb2.RobotControlType.RICOCHET:
             ricochet(cmd.ricochet, None, ball, uart_command)
+        elif cmd.robot_control_type == control_pb2.RobotControlType.CATCH_BALL:
+            catch_ball(cmd.catch_ball, None, ball, uart_command)
         return uart_command, False
     match cmd.robot_control_type:
         case control_pb2.RobotControlType.NEW_FORMAT:
@@ -173,6 +203,9 @@ def build_uart_command(
         case control_pb2.RobotControlType.RICOCHET:
             # Never "reached": the robot waits at the target for the ball
             ricochet(cmd.ricochet, robot, ball, uart_command)
+        case control_pb2.RobotControlType.CATCH_BALL:
+            # Never "reached": the robot waits for the ball until the strategy sends another command
+            catch_ball(cmd.catch_ball, robot, ball, uart_command)
         case control_pb2.RobotControlType.CAP_VEL_AND_ACCEL:
             # TODO: implement
             pass

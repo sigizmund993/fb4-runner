@@ -237,6 +237,48 @@ class BuildUartCommandTest(unittest.TestCase):
         far, _ = build_uart_command(cmd, make_robot(seen=False), ball=aux.Point(0.3, -5.0))
         self.assertEqual(far.vel_y, -command_receiver.config.RICOCHET_MAX_VEL)
 
+    def catch_ball_cmd(self, angle=0.0, kicker_mode=control_pb2.KickerMode.IDLE):
+        cmd = control_pb2.RobotCommand(robot_id=5, robot_control_type=CT.CATCH_BALL)
+        cmd.catch_ball.angle = angle
+        kad = cmd.catch_ball.kicker_and_dribbler
+        kad.kicker_mode = kicker_mode
+        kad.kicker_voltage = 9
+        kad.dribbler_setting = 3
+        return cmd
+
+    def test_catch_ball_turns_in_place(self):
+        # Far from anything: no target position, so no driving
+        uart, reached = build_uart_command(self.catch_ball_cmd(angle=0.0), make_robot(x=2.0, ang=math.pi / 2))
+        self.assertFalse(reached, "the robot must keep waiting for the ball")
+        self.assertEqual((uart.vel_x, uart.vel_y), (0, 0))
+        self.assertAlmostEqual(uart.w, -math.pi / 2, places=6)
+        self.assertTrue(uart.angle_mode)
+        self.assertEqual((uart.kicker_mode, uart.kicker_voltage, uart.dribbler_speed), (0, 9, 3))
+
+    def test_catch_ball_follows_ball_sideways_only(self):
+        gain = command_receiver.config.RICOCHET_CAM_GAIN
+        cmd = self.catch_ball_cmd(angle=0.3)
+        uart, _ = build_uart_command(cmd, make_robot(ang=0.3), ball=aux.Point(0.4, -0.1))
+        self.assertAlmostEqual(uart.vel_y, gain * -0.1, places=6)
+        self.assertEqual((uart.vel_x, uart.angle_mode), (0, True))
+        self.assertAlmostEqual(uart.w, 0, places=6)  # the angle is float32 in the proto
+        far, _ = build_uart_command(cmd, make_robot(ang=0.3), ball=aux.Point(0.4, 5.0))
+        self.assertEqual(far.vel_y, command_receiver.config.RICOCHET_MAX_VEL)
+
+    def test_catch_ball_without_vision_keeps_heading(self):
+        gain = command_receiver.config.RICOCHET_CAM_GAIN
+        cmd = self.catch_ball_cmd(angle=1.0, kicker_mode=control_pb2.KickerMode.AUTOKICK_STRAIGHT)
+        uart, reached = build_uart_command(cmd, make_robot(seen=False), ball=aux.Point(0.3, 0.2))
+        self.assertFalse(reached)
+        self.assertAlmostEqual(uart.vel_y, gain * 0.2, places=6)
+        self.assertEqual((uart.vel_x, uart.w, uart.angle_mode), (0, 0, True), "no turning blind")
+        self.assertEqual((uart.kicker_mode, uart.kicker_voltage, uart.dribbler_speed), (3, 9, 3))
+
+    def test_catch_ball_requires_kicker_and_dribbler(self):
+        cmd = control_pb2.RobotCommand(robot_id=5, robot_control_type=CT.CATCH_BALL)
+        cmd.catch_ball.angle = 0.0
+        self.assertFalse(cmd.IsInitialized(), "CommandReceiver drops such packets")
+
     def test_global_coordinates_without_vision_keep_kicker_off(self):
         cmd = global_coordinates_cmd(x=2.0)
         uart, _ = build_uart_command(cmd, make_robot(seen=False), ball=aux.Point(0.3, 0.2))
@@ -323,7 +365,12 @@ class CommandReceiverUdpTest(unittest.TestCase):
     def test_target_commands_do_not_expire(self):
         ricochet = control_pb2.RobotCommand(robot_id=5, robot_control_type=CT.RICOCHET)
         ricochet.ricochet.x, ricochet.ricochet.y, ricochet.ricochet.angle = 1.0, 0.0, 0.0
-        for cmd in (global_coordinates_cmd(x=1.0), ricochet):
+        catch = control_pb2.RobotCommand(robot_id=5, robot_control_type=CT.CATCH_BALL)
+        catch.catch_ball.angle = 0.0
+        catch.catch_ball.kicker_and_dribbler.kicker_mode = control_pb2.KickerMode.IDLE
+        catch.catch_ball.kicker_and_dribbler.kicker_voltage = 0
+        catch.catch_ball.kicker_and_dribbler.dribbler_setting = 3
+        for cmd in (global_coordinates_cmd(x=1.0), ricochet, catch):
             with self.subTest(CT.Name(cmd.robot_control_type)):
                 self.send(cmd.SerializeToString())
                 self.update()

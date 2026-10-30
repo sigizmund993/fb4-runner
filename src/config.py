@@ -31,7 +31,7 @@ BAUD_RATE = 115200
 UART_PORT = envfile.get("FB4_UART_PORT", "/dev/ttyACM0")
 CMD_RATE_HZ = 100  # matches the 10 ms firmware main loop
 CMD_TIMEOUT_S = 0.5  # stop the robot when the strategy goes silent for this long
-# Target commands (GLOBAL_COORDINATES, RICOCHET) run without the timeout above, but drive by the
+# Target commands (GLOBAL_COORDINATES, RICOCHET, CATCH_BALL) run without the timeout above, but drive by the
 # SSL vision position: stop when vision hasn't seen the robot for this long
 VISION_TIMEOUT_S = 0.3
 
@@ -44,7 +44,7 @@ BIND_HOST = "0.0.0.0"
 
 SHM_NAME = "ball_shm"
 
-# RICOCHET: lateral speed per metre of ball offset seen by the onboard camera
+# RICOCHET and CATCH_BALL: lateral speed per metre of ball offset seen by the onboard camera
 # (ball_detector.r_pos.y, robot frame: y left). Positive: the robot moves towards the ball.
 RICOCHET_CAM_GAIN = float(envfile.get("FB4_RICOCHET_CAM_GAIN", "5.0"))  # [1/s]
 RICOCHET_MAX_VEL = 2.0  # [m/s]
