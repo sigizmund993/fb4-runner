@@ -244,8 +244,11 @@ class TelemetryTransceiverTest(unittest.TestCase):
                 FakeSerial(mcu_frame(voltage=9.5, ball_front=True)),
                 sender,
                 FakeBallDetector(),
+                robot_id=multiprocessing.Value("i", 5),
                 dest=listener.getsockname(),
                 read_rpi_temp=lambda: 40.0,
+                # The default writes .env and renames the machine running the tests
+                save_id=lambda robot_id: self.fail(f"robot id {robot_id} must not be saved"),
             )
             self.assertEqual(tx.step(), 1)
             ready, _, _ = select.select([listener], [], [], 1.0)
