@@ -20,7 +20,7 @@ make flash-fw     # залить на STM32 релиз прошивки из CI 
 
 | Что | Механизм | Пишет → читает |
 |---|---|---|
-| `robot_id` | `multiprocessing.Value("i")`, -1 — не известен | `telemetry_transceiver` (принимает id от STM32) → `command_receiver` (ищет себя в vision, шлёт id в UART) |
+| `robot_id` | `multiprocessing.Value("i")` | `telemetry_transceiver` (принимает id от STM32) → `command_receiver` (ищет себя в vision, шлёт id в UART) |
 | `VisionClient._detections`, `_packages` | `multiprocessing.Manager().list()` — отдельный процесс-сервер, каждое чтение идёт через сокет с пересылкой всего кадра | `Vision_Receiver` → `command_receiver` (`Field.update()`, `get_robot()`) |
 | `/ball_shm`, `cx, cy` в пикселях (uint16) | POSIX shared memory | детектор мяча на Hailo (`yolo26_post.cpp`, запускает `run.sh`, отдельная программа) → `BallDetector` в `command_receiver` и `telemetry_transceiver` |
 
@@ -33,11 +33,10 @@ make flash-fw     # залить на STM32 релиз прошивки из CI 
 
 ## Настройки (.env)
 
-Настройки робота лежат в `.env` в корне репозитория. Файл не в git, у каждого робота свой; шаблон с описанием переменных — `.env.example`. Если `.env` нет, `make run`, `make run-stream` и `make flash-fw` создают его копией шаблона (а раннер — при первой записи id); существующий файл не перезаписывается, поэтому переменные, добавленные в шаблон позже, в него сами не попадут — до тех пор действуют значения по умолчанию. Переменная, заданная в окружении (`FB4_ROBOT_TEAM=blue make run`), перекрывает файл.
+Настройки робота лежат в `.env` в корне репозитория. Файл не в git, у каждого робота свой; шаблон с описанием переменных — `.env.example`. Если `.env` нет, `make run`, `make run-stream` и `make flash-fw` создают его копией шаблона; существующий файл не перезаписывается, поэтому переменные, добавленные в шаблон позже, в него сами не попадут — до тех пор действуют значения по умолчанию. Переменная, заданная в окружении (`FB4_ROBOT_TEAM=blue make run`), перекрывает файл.
 
 | Переменная | По умолчанию | Что это |
 |---|---|---|
-| `FB4_ROBOT_ID` | из hostname `fb4-NN` | id робота 0..15, раннер сам переписывает его (см. ниже) |
 | `FB4_ROBOT_TEAM` | `yellow` | `yellow` или `blue`, для поиска робота в SSL vision |
 | `FB4_UART_PORT` | `/dev/ttyACM0` | порт STM32 |
 | `FB4_RICOCHET_CAM_GAIN` | `5.0` | RICOCHET и CATCH_BALL: поперечная скорость [1/с] на метр смещения мяча |
@@ -82,16 +81,14 @@ make flash-fw     # залить на STM32 релиз прошивки из CI 
 
 ## robot_id и hostname
 
-Id робота согласуется с STM32 по UART и хранится в `.env` (`FB4_ROBOT_ID`) и в hostname RPi (`fb4-NN`, в mDNS — `fb4-NN.local`).
+Id робота хранится только в hostname RPi (`fb4-NN`, в mDNS — `fb4-NN.local`). В `.env` его нет, STM32 его не сохраняет: после загрузки у неё id нет (на экране `--`), она берёт id RPi с первого кадра.
 
-- При старте id берётся из `FB4_ROBOT_ID` (окружение, потом `.env`), если он пуст — из hostname `fb4-NN`. Если и hostname другой, id неизвестен: RPi шлёт `0xFF`, STM32 оставляет свой, а RPi сразу берёт id STM32.
-- Если hostname не совпадает с id, RPi переименовывается при старте.
-- RPi шлёт свой id в каждой команде. STM32 берёт его сразу и сохраняет в EEPROM, кроме случая, когда id на роботе только что поменяли кнопками.
-- `telemetry_transceiver` берёт id STM32, если тот отличается от своего дольше `ROBOT_ID_ADOPT_S` (1 с), записывает его в `.env` (иначе после перезапуска старый id из `.env` вернулся бы на STM32) и меняет hostname (`hostnamectl`, `/etc/hosts`, перезапуск avahi; нужен root). Если `FB4_ROBOT_ID` задан в окружении, а не в `.env`, после перезапуска победит он. Задержка даёт STM32 время взять id RPi при подключении и не переименовывает RPi на каждом нажатии кнопки, пока id перебирают.
-- Текущий id делят процессы через `multiprocessing.Value` (`-1` — неизвестен). `command_receiver` подхватывает новый id на лету: шлёт его в UART и ищет в SSL vision робота с этим id. Пока id неизвестен, робот считается невидимым в vision: GLOBAL_COORDINATES стоит, RICOCHET и CATCH_BALL только следят за мячом камерой.
+- При старте id — `NN` из hostname `fb4-NN`. Если hostname другой, id = 0 и RPi переименовывается в `fb4-00`.
+- RPi шлёт свой id в каждой команде. STM32 берёт его сразу, кроме случая, когда id на роботе поменяли кнопками.
+- `telemetry_transceiver` берёт id STM32, если тот отличается от своего дольше `ROBOT_ID_ADOPT_S` (1 с), и меняет hostname (`hostnamectl`, `/etc/hosts`, перезапуск avahi; нужен root). Задержка даёт STM32 время взять id RPi при подключении и не переименовывает RPi на каждом нажатии кнопки, пока id перебирают.
+- Текущий id делят процессы через `multiprocessing.Value`. `command_receiver` подхватывает новый id на лету: шлёт его в UART и ищет в SSL vision робота с этим id.
 - После смены id стратегия и teleop должны обращаться к новому `fb4-NN.local`.
-
-Ограничение: если поменять id кнопками и сохранить с перезагрузкой STM32, пока раннер не запущен, после подключения победит id RPi.
+- Поменять id без кнопок: `hostnamectl set-hostname fb4-NN` на RPi и перезапуск раннера.
 
 ## Выравнивание по камере
 
@@ -158,6 +155,11 @@ WantedBy=multi-user.target
 Время загрузки: `systemd-analyze`, `systemd-analyze blame`, `systemd-analyze critical-chain fb4-runner.service`.
 
 ## Чейнджлог
+
+### 2026-10-31
+
+- Id робота хранится только в hostname `fb4-NN` (если hostname другой — 0, RPi переименовывается в `fb4-00`). `FB4_ROBOT_ID` в `.env` больше не используется, STM32 не сохраняет id в EEPROM (нужна прошивка с этим изменением). См. «robot_id и hostname».
+- Тесты заменены двумя диагностиками: `make test-udp`, `make test-uart`.
 
 ### 2026-10-30
 

@@ -8,7 +8,7 @@ from google.protobuf.message import DecodeError
 
 import config
 from ball_detector import BallDetector
-from protocol.uart import NO_ROBOT_ID, UartCommand
+from protocol.uart import UartCommand
 from ssl_packet_package.protopy.spbunited.robot import control_pb2
 from utils.auxiliary import aux
 from vision.vision_receiver import Team, VisionClient
@@ -266,7 +266,7 @@ def build_uart_command(
 
 
 def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id):
-    """robot_id: multiprocessing.Value shared with telemetry_transceiver, which may change it; -1 = unknown."""
+    """robot_id: multiprocessing.Value shared with telemetry_transceiver, which may change it."""
     field = Field(client)
     receiver = CommandReceiver()
     ser = serial.Serial(config.UART_PORT, config.BAUD_RATE)
@@ -278,8 +278,7 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
     while True:
         if robot_id.value != current_id:
             current_id = robot_id.value
-            # Without an id there is no robot to look up in vision: a never seen one stops target commands
-            robot = field.get_robot(team, current_id) if current_id >= 0 else Robot(aux.Point(0, 0), 0, -1, team)
+            robot = field.get_robot(team, current_id)
         field.update()
         receiver.update()
         ball_detector.update()
@@ -288,7 +287,7 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
         )
         if target_reached:
             receiver.last_cmd = control_pb2.RobotCommand()
-        uart_command.robot_id = current_id if current_id >= 0 else NO_ROBOT_ID
+        uart_command.robot_id = current_id
         ser.write(uart_command.to_bytes())
 
         next_tick += period

@@ -10,8 +10,8 @@ from vision.vision_receiver import VisionClient
 def main():
     client = VisionClient()
     ball_detector = BallDetector()
-    # Agreed with the STM32 by telemetry_transceiver; -1 = unknown
-    robot_id = multiprocessing.Value("i", -1 if config.ROBOT_ID is None else config.ROBOT_ID)
+    # From the hostname; telemetry_transceiver changes it when the robot's buttons do
+    robot_id = multiprocessing.Value("i", config.ROBOT_ID)
     processes = [
         multiprocessing.Process(target=client.run, name="Vision_Receiver"),
         multiprocessing.Process(target=command_receiver, args=(client, ball_detector, robot_id), name="Command_Sender"),

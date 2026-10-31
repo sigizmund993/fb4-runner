@@ -11,7 +11,6 @@ from ball_detector import BallDetector
 from protocol.uart import TEL_FMT, FrameParser, Telemetry
 from ssl_packet_package.protopy.spbunited.robot import telemetry_pb2
 from utils.auxiliary import aux
-from utils import envfile
 from utils.change_hostname import change_hostname
 
 RPI_STATUS_PERIOD_S = 1.0
@@ -47,21 +46,12 @@ def rename_rpi(robot_id: int) -> None:
         print(f"can't change hostname: {e}")
 
 
-def save_robot_id(robot_id: int) -> None:
-    """Keeps the id over restarts: otherwise .env would bring back the old one and the STM32 would take it."""
-    try:
-        envfile.put(config.ROBOT_ID_KEY, str(robot_id))
-    except OSError as e:
-        print(f"can't save robot id to {envfile.ENV_FILE}: {e}")
-    rename_rpi(robot_id)
-
-
 class TelemetryTransceiver:
     """Forwards telemetry frames from the MCU as UDP broadcast protobuf packets.
 
     Also agrees the robot id with the MCU. Both send their id in every frame; the MCU takes ours
     right away unless its id was just changed with the buttons, and we take the MCU's once it has
-    differed for ROBOT_ID_ADOPT_S, saving it to .env and renaming the RPi to fb4-NN.
+    differed for ROBOT_ID_ADOPT_S, renaming the RPi to fb4-NN (the hostname is where the id is kept).
     """
 
     def __init__(
@@ -72,15 +62,15 @@ class TelemetryTransceiver:
         robot_id=None,
         dest: tuple[str, int] = ("<broadcast>", config.TEL_PORT),
         read_rpi_temp: Callable[[], float] = get_rpi_temp_c,
-        save_id: Callable[[int], None] = save_robot_id,
+        save_id: Callable[[int], None] = rename_rpi,
         clock: Callable[[], float] = monotonic,
     ):
         self.ser = ser
         self.sock = sock
         self.ball_detector = ball_detector
-        # multiprocessing.Value shared with command_receiver, which sends it to the MCU; -1 = unknown
+        # multiprocessing.Value shared with command_receiver, which sends it to the MCU
         if robot_id is None:
-            robot_id = multiprocessing.Value("i", -1 if config.ROBOT_ID is None else config.ROBOT_ID)
+            robot_id = multiprocessing.Value("i", config.ROBOT_ID)
         self.robot_id = robot_id
         self.dest = dest
         self.read_rpi_temp = read_rpi_temp
@@ -98,7 +88,7 @@ class TelemetryTransceiver:
         now = self.clock()
         if self.id_mismatch is None or self.id_mismatch[0] != mcu_id:
             self.id_mismatch = (mcu_id, now)
-        if self.robot_id.value >= 0 and now - self.id_mismatch[1] < config.ROBOT_ID_ADOPT_S:
+        if now - self.id_mismatch[1] < config.ROBOT_ID_ADOPT_S:
             return
         print(f"robot id {self.robot_id.value} -> {mcu_id} from the MCU")
         self.robot_id.value = mcu_id
@@ -120,8 +110,7 @@ class TelemetryTransceiver:
             if time() - self.last_rpi_status > RPI_STATUS_PERIOD_S:
                 rpi_temp = self.read_rpi_temp()
                 self.last_rpi_status = time()
-            robot_id = self.robot_id.value if self.robot_id.value >= 0 else tel.robot_id
-            packet = build_telemetry_packet(robot_id, tel, self.ball_detector.r_pos, rpi_temp)
+            packet = build_telemetry_packet(self.robot_id.value, tel, self.ball_detector.r_pos, rpi_temp)
             self.send(packet.SerializeToString())
         return len(frames)
 
@@ -138,7 +127,7 @@ class TelemetryTransceiver:
 
 
 def telemetry_transceiver(ball_detector: BallDetector, robot_id):
-    if robot_id.value >= 0 and config.hostname_robot_id() != robot_id.value:  # FB4_ROBOT_ID given
+    if config.hostname_robot_id() is None:  # the strategy finds the robot by fb4-NN.local
         rename_rpi(robot_id.value)
     ser = serial.Serial(config.UART_PORT, config.BAUD_RATE, timeout=1)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

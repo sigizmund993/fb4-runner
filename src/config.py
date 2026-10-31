@@ -8,7 +8,7 @@ from utils import envfile
 
 
 def hostname_robot_id() -> int | None:
-    """NN of the fb4-NN hostname the runner gives the RPi, None for any other hostname."""
+    """NN of the fb4-NN hostname, None for any other hostname."""
     match = re.fullmatch(r"fb4-(\d+)(\.local)?", socket.gethostname())
     return int(match.group(1)) if match else None
 
@@ -17,10 +17,10 @@ def robot_hostname(robot_id: int) -> str:
     return f"fb4-{robot_id:02d}.local"
 
 
-# The robot id is agreed with the STM32 over UART (see telemetry_transceiver), which writes it to
-# .env and the hostname. Empty in .env: the hostname's; None: not known yet, the STM32's is taken.
-ROBOT_ID_KEY = "FB4_ROBOT_ID"
-ROBOT_ID = int(envfile.get(ROBOT_ID_KEY)) if envfile.get(ROBOT_ID_KEY) else hostname_robot_id()
+# The robot id lives only in the hostname; the STM32 takes it over UART and doesn't keep it.
+# An id changed with the robot's buttons comes back in the telemetry and renames the RPi (see telemetry_transceiver)
+# Any other hostname: id 0, and telemetry_transceiver renames the RPi to fb4-00
+ROBOT_ID = hostname_robot_id() or 0
 MAX_ROBOT_ID = 15  # the firmware's id buttons wrap at 16
 # Take the STM32's id once it has differed from ours this long: on connect the STM32 takes our
 # id within a frame, so a lasting difference means it was changed with the buttons

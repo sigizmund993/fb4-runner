@@ -7,7 +7,7 @@ import struct
 from dataclasses import dataclass
 
 SYNC_BYTE = 0xA5
-NO_ROBOT_ID = 0xFF  # robot_id in a command: the RPi doesn't know its id, the STM32 keeps its own
+NO_ROBOT_ID = 0xFF  # robot_id in a command: no id (diagnostics), the STM32 keeps its own
 
 # vel_x, vel_y, w, dribbler, kicker [V] (fp16), kicker_mode (u8), angle_mode (bool), beep (bool),
 # robot_id (u8)
