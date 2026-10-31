@@ -51,7 +51,7 @@ class TelemetryTransceiver:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.ball_detector = ball_detector
-        self.robot_id = robot_id  # multiprocessing.Value shared with command_receiver, which sends it to the MCU
+        self.robot_id = robot_id  
         self.parser = FrameParser(TEL_FMT)
         self.last_rpi_status = float("-inf")
         self.id_mismatch: Optional[tuple[int, float]] = None  # (MCU id, since)

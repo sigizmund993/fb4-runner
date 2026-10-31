@@ -48,16 +48,3 @@ SHM_NAME = "ball_shm"
 # (ball_detector.r_pos.y, robot frame: y left). Positive: the robot moves towards the ball.
 RICOCHET_CAM_GAIN = float(envfile.get("FB4_RICOCHET_CAM_GAIN", "5.0"))  # [1/s]
 RICOCHET_MAX_VEL = 2.0  # [m/s]
-# The sideways speed aims at where the ball will reach the kicker face: its camera y moved by its
-# sideways speed (robot frame) until its x reaches KICKER_FACE_X. Only for a ball approaching faster
-# than RICOCHET_MIN_APPROACH_VEL, and no further ahead than RICOCHET_MAX_PREDICT_S
-KICKER_FACE_X = float(envfile.get("FB4_KICKER_FACE_X", "0.10"))  # [m], from the robot centre (calibration origin)
-RICOCHET_MIN_APPROACH_VEL = 0.3  # [m/s]
-RICOCHET_MAX_PREDICT_S = 1.0
-# RICOCHET without angle aims at the goal centre at x = sign * field_length / 2
-RICOCHET_GOAL_SIGN = {"positive": 1, "negative": -1}[envfile.get("FB4_RICOCHET_GOAL", "positive")]
-FIELD_LENGTH_M = 9.0  # Division B, until vision sends the geometry
-# The heading is turned against the drift: the kick adds RICOCHET_KICK_SPEED along the heading and
-# the ball keeps RICOCHET_TANGENT_KEEP of its speed along the kicker face
-RICOCHET_KICK_SPEED = float(envfile.get("FB4_RICOCHET_KICK_SPEED", "5.0"))  # [m/s]
-RICOCHET_TANGENT_KEEP = float(envfile.get("FB4_RICOCHET_TANGENT_KEEP", "0.8"))
