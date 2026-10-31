@@ -1,4 +1,4 @@
-from time import sleep, time
+from time import monotonic, sleep
 
 from utils.auxiliary import aux
 from vision.vision_receiver import Geometry, Team, VisionClient
@@ -9,7 +9,7 @@ class Ball:
     def __init__(self, pos: aux.Point):
         self.pos = pos
         self.vel = aux.Point(0, 0)
-        self.last_update = float("-inf")  # time() of the last vision detection; never seen yet
+        self.last_update = float("-inf")  # monotonic() of the last vision detection; never seen yet
         self.filter_x = AlphaBetaFilter(0.6, 0.15, self.pos.x)
         self.filter_y = AlphaBetaFilter(0.6, 0.15, self.pos.y)
 
@@ -18,10 +18,10 @@ class Ball:
         self.filter_y.update(pos.y)
         self.vel = aux.Point(self.filter_x.dx, self.filter_y.dx)
         self.pos = aux.Point(self.filter_x.x, self.filter_y.x)
-        self.last_update = time()
+        self.last_update = monotonic()
 
-    def is_visible(self, now: float, timeout: float) -> bool:
-        return now - self.last_update <= timeout
+    def is_visible(self, timeout: float) -> bool:
+        return monotonic() - self.last_update <= timeout
 
 
 class Robot:
@@ -32,7 +32,7 @@ class Robot:
         self.team = team
         self.vel = aux.Point(0, 0)
         self.angle_vel = 0.0
-        self.last_update = float("-inf")  # time() of the last vision detection; never seen yet
+        self.last_update = float("-inf")  # monotonic() of the last vision detection; never seen yet
         self.filter_x = AlphaBetaFilter(0.6, 0.15, self.pos.x)
         self.filter_y = AlphaBetaFilter(0.6, 0.15, self.pos.y)
         self.filter_ang = AlphaBetaFilter(0.6, 0.15, self.ang, True)
@@ -45,10 +45,10 @@ class Robot:
         self.pos = aux.Point(self.filter_x.x, self.filter_y.x)
         self.angle_vel = self.filter_ang.dx
         self.ang = self.filter_ang.x
-        self.last_update = time()
+        self.last_update = monotonic()
 
-    def is_visible(self, now: float, timeout: float) -> bool:
-        return now - self.last_update <= timeout
+    def is_visible(self, timeout: float) -> bool:
+        return monotonic() - self.last_update <= timeout
 
 
 class Field:

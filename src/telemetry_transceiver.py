@@ -1,8 +1,7 @@
-import multiprocessing
 import socket
 import subprocess
-from time import monotonic, time
-from typing import Callable, Optional
+from time import monotonic
+from typing import Optional
 
 import serial
 
@@ -47,37 +46,14 @@ def rename_rpi(robot_id: int) -> None:
 
 
 class TelemetryTransceiver:
-    """Forwards telemetry frames from the MCU as UDP broadcast protobuf packets.
-
-    Also agrees the robot id with the MCU. Both send their id in every frame; the MCU takes ours
-    right away unless its id was just changed with the buttons, and we take the MCU's once it has
-    differed for ROBOT_ID_ADOPT_S, renaming the RPi to fb4-NN (the hostname is where the id is kept).
-    """
-
-    def __init__(
-        self,
-        ser,
-        sock: socket.socket,
-        ball_detector: BallDetector,
-        robot_id=None,
-        dest: tuple[str, int] = ("<broadcast>", config.TEL_PORT),
-        read_rpi_temp: Callable[[], float] = get_rpi_temp_c,
-        save_id: Callable[[int], None] = rename_rpi,
-        clock: Callable[[], float] = monotonic,
-    ):
-        self.ser = ser
-        self.sock = sock
+    def __init__(self, ball_detector: BallDetector, robot_id):
+        self.ser = serial.Serial(config.UART_PORT, config.BAUD_RATE, timeout=1)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.ball_detector = ball_detector
-        # multiprocessing.Value shared with command_receiver, which sends it to the MCU
-        if robot_id is None:
-            robot_id = multiprocessing.Value("i", config.ROBOT_ID)
-        self.robot_id = robot_id
-        self.dest = dest
-        self.read_rpi_temp = read_rpi_temp
-        self.save_id = save_id
-        self.clock = clock
+        self.robot_id = robot_id  # multiprocessing.Value shared with command_receiver, which sends it to the MCU
         self.parser = FrameParser(TEL_FMT)
-        self.last_rpi_status = 0.01
+        self.last_rpi_status = float("-inf")
         self.id_mismatch: Optional[tuple[int, float]] = None  # (MCU id, since)
         self.send_failing = False
 
@@ -85,7 +61,7 @@ class TelemetryTransceiver:
         if mcu_id == self.robot_id.value or mcu_id > config.MAX_ROBOT_ID:
             self.id_mismatch = None
             return
-        now = self.clock()
+        now = monotonic()
         if self.id_mismatch is None or self.id_mismatch[0] != mcu_id:
             self.id_mismatch = (mcu_id, now)
         if now - self.id_mismatch[1] < config.ROBOT_ID_ADOPT_S:
@@ -93,31 +69,30 @@ class TelemetryTransceiver:
         print(f"robot id {self.robot_id.value} -> {mcu_id} from the MCU")
         self.robot_id.value = mcu_id
         self.id_mismatch = None
-        self.save_id(mcu_id)
+        rename_rpi(mcu_id)
 
-    def step(self) -> int:
-        """Reads pending UART bytes and sends a packet per frame. Returns the number sent."""
+    def step(self) -> None:
+        """Reads pending UART bytes and sends a packet per frame."""
         # Blocks for up to the serial timeout when nothing is pending
         frames = self.parser.feed(self.ser.read(self.ser.in_waiting or 1))
         if not frames:
-            return 0
+            return
         self.ball_detector.update()
 
         for frame in frames:
             tel = Telemetry(*frame)
             self.sync_robot_id(tel.robot_id)
             rpi_temp = None
-            if time() - self.last_rpi_status > RPI_STATUS_PERIOD_S:
-                rpi_temp = self.read_rpi_temp()
-                self.last_rpi_status = time()
+            if monotonic() - self.last_rpi_status > RPI_STATUS_PERIOD_S:
+                rpi_temp = get_rpi_temp_c()
+                self.last_rpi_status = monotonic()
             packet = build_telemetry_packet(self.robot_id.value, tel, self.ball_detector.r_pos, rpi_temp)
             self.send(packet.SerializeToString())
-        return len(frames)
 
     def send(self, data: bytes) -> None:
         # The runner starts before Wi-Fi is up: until then there is no route for the broadcast
         try:
-            self.sock.sendto(data, self.dest)
+            self.sock.sendto(data, ("<broadcast>", config.TEL_PORT))
         except OSError as e:
             if not self.send_failing:
                 print(f"can't send telemetry yet ({e}), dropping it until the network is up")
@@ -129,9 +104,6 @@ class TelemetryTransceiver:
 def telemetry_transceiver(ball_detector: BallDetector, robot_id):
     if config.hostname_robot_id() is None:  # the strategy finds the robot by fb4-NN.local
         rename_rpi(robot_id.value)
-    ser = serial.Serial(config.UART_PORT, config.BAUD_RATE, timeout=1)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    transceiver = TelemetryTransceiver(ser, sock, ball_detector, robot_id)
+    transceiver = TelemetryTransceiver(ball_detector, robot_id)
     while True:
         transceiver.step()

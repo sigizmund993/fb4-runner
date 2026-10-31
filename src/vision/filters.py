@@ -1,5 +1,5 @@
 import math
-from time import time
+from time import monotonic
 
 
 class AlphaBetaFilter:
@@ -9,10 +9,10 @@ class AlphaBetaFilter:
         self.x = x
         self.dx = 0.0
         self.is_angle = is_angle
-        self.last_update = time()
+        self.last_update = monotonic()
 
     def update(self, new_x: float) -> None:
-        now = time()
+        now = monotonic()
         dt = now - self.last_update
         self.last_update = now
         pred_x = self.x + self.dx * dt

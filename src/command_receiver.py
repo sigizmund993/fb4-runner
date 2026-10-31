@@ -1,6 +1,6 @@
 import math
 import socket
-from time import monotonic, sleep, time
+from time import monotonic, sleep
 from typing import Optional
 
 import serial
@@ -25,9 +25,9 @@ TARGET_COMMANDS = (
 
 
 class CommandReceiver:
-    def __init__(self, host: str = config.BIND_HOST, port: int = config.CMD_PORT):
+    def __init__(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((host, port))
+        self.sock.bind((config.BIND_HOST, config.CMD_PORT))
         self.sock.setblocking(False)
         self.last_cmd = control_pb2.RobotCommand()
         self.last_rx_time = float("-inf")
@@ -50,11 +50,11 @@ class CommandReceiver:
             self.last_cmd = cmd
             self.last_rx_time = monotonic()
 
-    def current_command(self, now: float | None = None) -> control_pb2.RobotCommand:
+    def current_command(self) -> control_pb2.RobotCommand:
         """Latest command, or a stop command once the strategy has gone silent (target commands never expire)."""
         if self.last_cmd.robot_control_type in TARGET_COMMANDS:
             return self.last_cmd
-        if (monotonic() if now is None else now) - self.last_rx_time > config.CMD_TIMEOUT_S:
+        if monotonic() - self.last_rx_time > config.CMD_TIMEOUT_S:
             return control_pb2.RobotCommand()
         return self.last_cmd
 
@@ -158,13 +158,11 @@ def ricochet_heading(hit: aux.Point, goal: aux.Point, ball_vel: aux.Point) -> fl
     return aux.wind_down_angle(heading)
 
 
-def ricochet_angle(cmd: control_pb2.Ricochet, robot: Robot, field: Optional[Field], now: float) -> float:
-    """The command's angle, else the heading into the goal (the current one without the field)."""
+def ricochet_angle(cmd: control_pb2.Ricochet, field: Field) -> float:
+    """The command's angle, else the heading into the goal."""
     if cmd.HasField("angle"):
         return cmd.angle
-    if field is None:
-        return robot.ang
-    ball_vel = field.ball.vel if field.ball.is_visible(now, config.VISION_TIMEOUT_S) else aux.Point(0, 0)
+    ball_vel = field.ball.vel if field.ball.is_visible(config.VISION_TIMEOUT_S) else aux.Point(0, 0)
     return ricochet_heading(aux.Point(cmd.x, cmd.y), ricochet_goal(field), ball_vel)
 
 
@@ -172,9 +170,9 @@ def ricochet(
     cmd: control_pb2.Ricochet,
     robot: Optional[Robot],
     ball: Optional[aux.Point],
+    ball_vel: Optional[aux.Point],
     uart_command: UartCommand,
     angle: float = 0.0,
-    ball_vel: Optional[aux.Point] = None,
 ) -> None:
     """Holds angle and drives to the target; once the camera sees the ball,
     the sideways speed follows the ball instead, so it bounces off at that angle.
@@ -192,8 +190,8 @@ def catch_ball(
     cmd: control_pb2.CatchBall,
     robot: Optional[Robot],
     ball: Optional[aux.Point],
+    ball_vel: Optional[aux.Point],
     uart_command: UartCommand,
-    ball_vel: Optional[aux.Point] = None,
 ) -> None:
     """Turns to the angle and doesn't drive forward; the sideways speed follows the ball seen by the camera.
     robot is None without vision: then it keeps its current heading."""
@@ -209,10 +207,9 @@ def catch_ball(
 def build_uart_command(
     cmd: control_pb2.RobotCommand,
     robot: Robot,
-    ball: Optional[aux.Point] = None,
-    now: Optional[float] = None,
-    field: Optional[Field] = None,
-    ball_vel: Optional[aux.Point] = None,
+    field: Field,
+    ball: Optional[aux.Point],
+    ball_vel: Optional[aux.Point],
 ) -> tuple[UartCommand, bool]:
     """Translates a protobuf command into a UART command.
 
@@ -227,12 +224,11 @@ def build_uart_command(
     """
     uart_command = UartCommand(beep=cmd.beep)
     target_reached = False
-    now = time() if now is None else now
-    if cmd.robot_control_type in TARGET_COMMANDS and not robot.is_visible(now, config.VISION_TIMEOUT_S):
+    if cmd.robot_control_type in TARGET_COMMANDS and not robot.is_visible(config.VISION_TIMEOUT_S):
         if cmd.robot_control_type == control_pb2.RobotControlType.RICOCHET:
-            ricochet(cmd.ricochet, None, ball, uart_command, ball_vel=ball_vel)
+            ricochet(cmd.ricochet, None, ball, ball_vel, uart_command)
         elif cmd.robot_control_type == control_pb2.RobotControlType.CATCH_BALL:
-            catch_ball(cmd.catch_ball, None, ball, uart_command, ball_vel)
+            catch_ball(cmd.catch_ball, None, ball, ball_vel, uart_command)
         return uart_command, False
     match cmd.robot_control_type:
         case control_pb2.RobotControlType.NEW_FORMAT:
@@ -254,11 +250,11 @@ def build_uart_command(
                 target_reached = True
         case control_pb2.RobotControlType.RICOCHET:
             # Never "reached": the robot waits at the target for the ball
-            angle = ricochet_angle(cmd.ricochet, robot, field, now)
-            ricochet(cmd.ricochet, robot, ball, uart_command, angle, ball_vel)
+            angle = ricochet_angle(cmd.ricochet, field)
+            ricochet(cmd.ricochet, robot, ball, ball_vel, uart_command, angle)
         case control_pb2.RobotControlType.CATCH_BALL:
             # Never "reached": the robot waits for the ball until the strategy sends another command
-            catch_ball(cmd.catch_ball, robot, ball, uart_command, ball_vel)
+            catch_ball(cmd.catch_ball, robot, ball, ball_vel, uart_command)
         case control_pb2.RobotControlType.CAP_VEL_AND_ACCEL:
             # TODO: implement
             pass
@@ -274,7 +270,7 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
     current_id = None
     period = 1 / config.CMD_RATE_HZ
 
-    next_tick = time()
+    next_tick = monotonic()
     while True:
         if robot_id.value != current_id:
             current_id = robot_id.value
@@ -283,7 +279,7 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
         receiver.update()
         ball_detector.update()
         uart_command, target_reached = build_uart_command(
-            receiver.current_command(), robot, ball_detector.r_pos, field=field, ball_vel=ball_detector.r_vel
+            receiver.current_command(), robot, field, ball_detector.r_pos, ball_detector.r_vel
         )
         if target_reached:
             receiver.last_cmd = control_pb2.RobotCommand()
@@ -291,8 +287,8 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
         ser.write(uart_command.to_bytes())
 
         next_tick += period
-        delay = next_tick - time()
+        delay = next_tick - monotonic()
         if delay > 0:
             sleep(delay)
         else:
-            next_tick = time()
+            next_tick = monotonic()
