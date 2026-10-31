@@ -5,11 +5,31 @@
 ```bash
 make run          # без видеострима
 make run-stream   # со стримом rtsp://<RPi>:8554/ball
-make test         # юнит-тесты
+make test-udp     # печатать команды, приходящие по UDP (main.py остановлен)
+make test-uart    # тестовые команды в UART (дриблер, езда, поворот) и телеметрия STM32; робот на подставке
 make flash-fw     # залить на STM32 релиз прошивки из CI (FB4_FW_RELEASE)
 ```
 
 Процессы (`src/main.py`): приём SSL vision, `command_receiver` (UDP :5555 → UART, 100 Гц), `telemetry_transceiver` (UART → UDP broadcast :5556).
+
+## Данные между процессами
+
+`main.py` создаёт объекты и передаёт их в процессы аргументами; при старте процесса каждый объект копируется, общим остаётся только то, что лежит в общей памяти или у сервера `Manager`.
+
+Общие:
+
+| Что | Механизм | Пишет → читает |
+|---|---|---|
+| `robot_id` | `multiprocessing.Value("i")`, -1 — не известен | `telemetry_transceiver` (принимает id от STM32) → `command_receiver` (ищет себя в vision, шлёт id в UART) |
+| `VisionClient._detections`, `_packages` | `multiprocessing.Manager().list()` — отдельный процесс-сервер, каждое чтение идёт через сокет с пересылкой всего кадра | `Vision_Receiver` → `command_receiver` (`Field.update()`, `get_robot()`) |
+| `/ball_shm`, `cx, cy` в пикселях (uint16) | POSIX shared memory | детектор мяча на Hailo (`yolo26_post.cpp`, запускает `run.sh`, отдельная программа) → `BallDetector` в `command_receiver` и `telemetry_transceiver` |
+
+Копии (у каждого процесса свои):
+
+| Что | У кого | Следствие |
+|---|---|---|
+| `BallDetector`: `p_pos`, `r_pos`, `r_vel`, альфа-бета фильтры | `command_receiver`, `telemetry_transceiver` | Оба сами вызывают `update()` и считают мяч из `/ball_shm` независимо: мяч в телеметрии и мяч для RICOCHET/CATCH_BALL могут расходиться на кадр |
+| `VisionClient`: настройки, multicast-сокет, `_robot_detection_time` | `Vision_Receiver`, `command_receiver` | Сокет читает и `_robot_detection_time` ведёт только `Vision_Receiver`; `command_receiver` берёт из клиента только общие списки выше |
 
 ## Настройки (.env)
 

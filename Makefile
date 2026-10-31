@@ -71,13 +71,14 @@ run-stream: .env
 	./run.sh  > /dev/null& \
 	PYTHONPATH=. ./venv/bin/python src/main.py & \
 	wait
-test:
-	$(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -v
-test-hw:
-	FB4_HW_TEST=1 $(if $(PORT),FB4_UART_PORT=$(PORT)) $(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -p test_uart_hardware.py -v $(if $(K),-k $(K))
 
-test-rpi:
-	FB4_RPI_TEST=1 $(if $(HOST),FB4_RPI_HOST=$(HOST)) $(if $(wildcard venv/bin/python),./venv/bin/python,python3) -m unittest discover -s tests -p test_rpi_udp.py -v $(if $(K),-k $(K))
+# Diagnostics on the RPi, with main.py stopped (systemctl stop fb4-runner)
+PY = $(if $(wildcard venv/bin/python),./venv/bin/python,python3)
+
+test-udp:
+	PYTHONPATH=.:src $(PY) -u tests/udp_dump.py
+test-uart:
+	$(if $(PORT),FB4_UART_PORT=$(PORT)) PYTHONPATH=.:src $(PY) -u tests/uart_check.py
 
 # CI firmware release (FB4_FW_BRANCH, FB4_FW_RELEASE in .env) -> STM32 over ST-Link; skips if already flashed
 # make flash-fw [BRANCH=main] [RELEASE=latest|5|<tag>] [ARGS=--dry-run|--force]
@@ -86,4 +87,4 @@ flash-fw: .env
 
 .PHONY: install install-deps install-driver install-mediamtx \
         compile-so \
-        run run-stream test test-hw test-rpi flash-fw 
+        run run-stream test-udp test-uart flash-fw 
