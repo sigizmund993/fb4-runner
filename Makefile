@@ -80,6 +80,12 @@ test-udp:
 test-uart:
 	$(if $(PORT),FB4_UART_PORT=$(PORT)) PYTHONPATH=.:src $(PY) -u tests/uart_check.py
 
+# Camera calibration from SSL vision (see README): record on the RPi, fit anywhere
+calib-record:
+	PYTHONPATH=.:src $(PY) -u src/to_real_coords/calib_record.py $(if $(TEAM),--team $(TEAM)) $(if $(ID),--id $(ID))
+calib-fit:
+	PYTHONPATH=.:src $(PY) src/to_real_coords/calib_fit.py $(DATA) $(if $(SAVE),--save)
+
 # CI firmware release (FB4_FW_BRANCH, FB4_FW_RELEASE in .env) -> STM32 over ST-Link; skips if already flashed
 # make flash-fw [BRANCH=main] [RELEASE=latest|5|<tag>] [ARGS=--dry-run|--force]
 flash-fw: .env
@@ -87,4 +93,4 @@ flash-fw: .env
 
 .PHONY: install install-deps install-driver install-mediamtx \
         compile-so \
-        run run-stream test-udp test-uart flash-fw 
+        run run-stream test-udp test-uart calib-record calib-fit flash-fw 

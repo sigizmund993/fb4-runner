@@ -15,9 +15,26 @@ NO_BALL = (1281, 961)
 SHM_WAIT_S = 30.0
 
 
+def attach_shm() -> SharedMemory:
+    deadline = monotonic() + SHM_WAIT_S
+    while True:
+        try:
+            return SharedMemory(name=config.SHM_NAME)
+        # ValueError: created but not sized yet (ftruncate in yolo26_post.cpp)
+        except (FileNotFoundError, ValueError):
+            if monotonic() > deadline:
+                raise
+            sleep(0.05)
+
+
+def read_pixel(shm: SharedMemory) -> tuple[int, int]:
+    """The ball's bbox centre [px] from yolo26_post.cpp, NO_BALL when not detected."""
+    return struct.unpack("<HH", shm.buf[:4])
+
+
 class BallDetector:
     def __init__(self):
-        self.shm = self._attach_shm()
+        self.shm = attach_shm()
         self.coord_converter = CoordConverter(
             str(CALIB_DIR / "camera_params_fisheye.npz"),
             str(CALIB_DIR / "homography_matrix.npy"),
@@ -26,20 +43,8 @@ class BallDetector:
         self.r_pos: Optional[aux.Point] = None  # [m], robot frame: x forward, y left
         self._last_px: Optional[tuple[int, int]] = None
 
-    @staticmethod
-    def _attach_shm() -> SharedMemory:
-        deadline = monotonic() + SHM_WAIT_S
-        while True:
-            try:
-                return SharedMemory(name=config.SHM_NAME)
-            # ValueError: created but not sized yet (ftruncate in yolo26_post.cpp)
-            except (FileNotFoundError, ValueError):
-                if monotonic() > deadline:
-                    raise
-                sleep(0.05)
-
     def update(self):
-        cx, cy = struct.unpack("<HH", self.shm.buf[:4])
+        cx, cy = read_pixel(self.shm)
         if (cx, cy) == NO_BALL:
             self.r_pos = None
             self.p_pos = None
