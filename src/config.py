@@ -44,7 +44,20 @@ BIND_HOST = "0.0.0.0"
 
 SHM_NAME = "ball_shm"
 
-# RICOCHET and CATCH_BALL: lateral speed per metre of ball offset seen by the onboard camera
-# (ball_detector.r_pos.y, robot frame: y left). Positive: the robot moves towards the ball.
+# RICOCHET and CATCH_BALL: once the onboard camera sees the ball coming to the kicker, the robot moves only
+# across the ball path, speed = gain * miss (from the path to the kicker centre); the gain is at least
+# RICOCHET_CAM_GAIN and grows so the miss is closed by RICOCHET_FREEZE_S before the ball comes. CATCH_BALL
+# before that: sideways speed RICOCHET_CAM_GAIN * y of the ball seen by the camera (robot frame: y left)
 RICOCHET_CAM_GAIN = float(envfile.get("FB4_RICOCHET_CAM_GAIN", "5.0"))  # [1/s]
 RICOCHET_MAX_VEL = 2.0  # [m/s]
+# Ball centre at the hit, robot frame (camera calibration origin: robot centre), x forward; as the strategy's
+# contact point at ROBOT_R = 100 mm from the robot centre
+KICKER_FACE_X = float(envfile.get("FB4_KICKER_FACE_X", "0.10"))  # [m]
+# The ball "comes to the kicker" if its speed towards the kicker centre is above this
+RICOCHET_MIN_APPROACH_VEL = 0.3  # [m/s]
+# The robot stops correcting this long before the ball comes
+RICOCHET_FREEZE_S = 0.05  # [s]
+# The ball path is a line through the camera frames of the last BALL_PATH_S, at least BALL_PATH_MIN_FRAMES
+# of them (the camera runs at 30 fps)
+BALL_PATH_S = 0.2  # [s]
+BALL_PATH_MIN_FRAMES = 3

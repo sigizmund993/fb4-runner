@@ -58,6 +58,8 @@ class Field:
         self.yellow_robots = [Robot(aux.Point(0, 0), 0, i, Team.YELLOW) for i in range(16)]
         self.blue_robots = [Robot(aux.Point(0, 0), 0, i, Team.BLUE) for i in range(16)]
         self.geometry = Geometry(0, 0, 0, 0, 0, 0, 0, 0)
+        self._ball_capture = None  # t_capture of the last ball fed to the filter
+        self._robot_captures: dict[tuple[int, int], float] = {}
         sleep(1)
         self.update()
 
@@ -66,10 +68,17 @@ class Field:
         return robots[robot_id]
 
     def update(self):
+        """Feeds only new captures: the detection keeps the last ball and robots between vision frames, and
+        this runs every tick, more often than vision. Repeats would pull the filtered velocity to zero and keep
+        a lost ball or robot "visible"."""
         detection = self.client.get_detection()
-        if len(detection.balls) > 0:
+        if detection.balls and detection.balls[0].frame_info.t_capture != self._ball_capture:
+            self._ball_capture = detection.balls[0].frame_info.t_capture
             self.ball.update(detection.balls[0].pos / 1000)
         for rbt_det in detection.robots:
-            self.get_robot(rbt_det.team, rbt_det.robot_id).update(rbt_det.pos / 1000, rbt_det.orientation)
+            key = (rbt_det.team.value, rbt_det.robot_id)
+            if self._robot_captures.get(key) != rbt_det.frame_info.t_capture:
+                self._robot_captures[key] = rbt_det.frame_info.t_capture
+                self.get_robot(rbt_det.team, rbt_det.robot_id).update(rbt_det.pos / 1000, rbt_det.orientation)
         if detection.geometry:
             self.geometry = detection.geometry

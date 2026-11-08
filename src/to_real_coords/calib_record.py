@@ -34,6 +34,7 @@ def main():
     parser.add_argument("--id", type=int, default=config.ROBOT_ID)
     args = parser.parse_args()
 
+    print(f"waiting for /{config.SHM_NAME} (the detector, run.sh)")
     shm = attach_shm()
     vision = attr.fields(VisionClient)
     reader = SocketReader(ip=vision.multicast_ip.default, port=vision.multicast_port.default)
