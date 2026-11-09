@@ -60,7 +60,7 @@ make flash-fw     # залить на STM32 релиз прошивки из CI 
 |---|---|---|---|
 | RPi → STM | `<5eB??B` | vel_x, vel_y, w, dribbler, kicker [В] (fp16), kicker_mode, angle_mode, beep, robot_id | 16 байт |
 | STM → RPi | `<Be??` | robot_id, напряжение кикера [В] (fp16), ball_deep, ball_front | 7 байт |
-| RPi → STM, настройки | `<8f` | angle_k, angle_b, max_linear_vel, max_linear_accel, max_angular_vel, max_angular_accel, wheel_vel_p, wheel_vel_i (float32); NaN — не менять | 34 байта, синхробайт `0x5A` |
+| RPi → STM, настройки | `<8f` | angle_k, angle_b, max_linear_vel, max_linear_accel, max_angular_vel, max_angular_accel, wheel_vel_p, wheel_vel_i (float32); NaN — по умолчанию | 34 байта, синхробайт `0x5A` |
 
 Если формат меняется, прошивку, раннер и teleop надо обновлять вместе: кадры другой длины не распознаются, и робот стоит. Кадр настроек teleop не шлёт; старая прошивка его пропускает как мусор.
 
@@ -72,7 +72,7 @@ make flash-fw     # залить на STM32 релиз прошивки из CI 
 - Поля STM32 (`angle_k`, `angle_b`, ограничения скорости и ускорения, PID скорости колёс `wheel_vel_p/i`) раннер отправляет кадром настроек по UART сразу и потом раз в `SETTINGS_RESEND_S` (1 с): STM32 их не хранит и после сброса получает снова. Прошивка пишет в лог только изменения (`Settings from the RPi`), PID колёс отправляет моторам по CAN тоже только при изменении.
 - Остальные только у раннера (`src/tuning.py`): `position_kp`, `position_max_vel` (езда в точку по vision для GLOBAL_COORDINATES и RICOCHET), `ricochet_gain`, `catch_gain`, `onboard_max_vel`, `kicker_face_x`, `min_approach_vel`, `freeze_s` (см. «RICOCHET и CATCH_BALL»). Изменения печатаются в журнал (`coefficients: ...`).
 - В медленной части телеметрии (`raspberry_status`, раз в секунду) `coefficients_crc` — CRC32 сохранённых коэффициентов (по имени, значение во float32). Стратегия (`FB4_COEFFICIENTS` в `strategy/bridge/const/coef_const.py`, всегда полная таблица) шлёт `SET_COEFFICIENTS` всем роботам при своём старте, сразу после `RobotCommand.set_coefficients` (OPTIMIZE_PID) и роботу, у которого CRC не совпадает с её, не чаще раза в 2 с (робот, включённый позже). Таблица стратегии перекрывает `FB4_RICOCHET_CAM_GAIN` и `FB4_KICKER_FACE_X` из `.env`. Формулу CRC менять в `tuning.coefficients_crc` и в стратегии вместе.
-- NaN и отрицательные значения игнорируются.
+- Каждый `SET_COEFFICIENTS` заменяет весь набор: поля, которых в нём нет, а также NaN и отрицательные значения берутся по умолчанию (как в прошивке).
 
 ## Напряжение кикера
 

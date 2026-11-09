@@ -17,7 +17,7 @@ NO_ROBOT_ID = 0xFF  # robot_id in a command: no id (diagnostics), the STM32 keep
 CMD_FMT = "<5eB??B"
 CMD_FRAME_LEN = 1 + struct.calcsize(CMD_FMT) + 1
 
-# The settings frame, float32 each; NaN: keep the current value
+# The settings frame, float32 each; NaN: the firmware's default
 SETTINGS_FIELDS = (
     "angle_k", "angle_b", "max_linear_vel", "max_linear_accel", "max_angular_vel", "max_angular_accel",
     "wheel_vel_p", "wheel_vel_i",

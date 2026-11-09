@@ -65,27 +65,33 @@ class CoefficientStore:
             print(f"coefficients from {path}: {self.values}")
 
     def _apply_tuning(self) -> None:
+        defaults = Tuning()
         for f in fields(tuning):
-            if f.name in self.values:
-                setattr(tuning, f.name, self.values[f.name])
+            setattr(tuning, f.name, self.values.get(f.name, getattr(defaults, f.name)))
 
-    def update(self, coefficients: control_pb2.Coefficients) -> list[str]:
-        """Takes the set fields (NaN and negative are ignored, as in the firmware), saves them; returns the
-        changed ones as "name old -> new"."""
-        changed = []
+    def replace(self, coefficients: control_pb2.Coefficients) -> list[str]:
+        """The coefficients become the set fields of the command; unset, NaN and negative take the defaults
+        (as in the firmware). Saves them; returns the changed ones as "name old -> new"."""
+        values = {}
         for name in COEFFICIENT_NAMES:
-            if not coefficients.HasField(name):
-                continue
-            value = getattr(coefficients, name)
-            if math.isnan(value) or value < 0 or self.values.get(name) == value:
-                continue
-            old = self.values.get(name)
-            changed.append(f"{name} {'default' if old is None else f'{old:g}'} -> {value:g}")
-            self.values[name] = value
+            if coefficients.HasField(name):
+                value = getattr(coefficients, name)
+                if not math.isnan(value) and value >= 0:
+                    values[name] = value
+        changed = [
+            f"{name} {self._fmt(self.values.get(name))} -> {self._fmt(values.get(name))}"
+            for name in COEFFICIENT_NAMES
+            if self.values.get(name) != values.get(name)
+        ]
         if changed:
+            self.values = values
             self._apply_tuning()
             self._save()
         return changed
+
+    @staticmethod
+    def _fmt(value) -> str:
+        return "default" if value is None else f"{value:g}"
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
