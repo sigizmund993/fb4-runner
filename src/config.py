@@ -44,6 +44,13 @@ BIND_HOST = "0.0.0.0"
 
 SHM_NAME = "ball_shm"
 
+# The defaults of the coefficients below the strategy can change on the fly (SET_COEFFICIENTS, see tuning.py)
+# The STM32 coefficients are sent to it this often: it doesn't keep them over a reset
+SETTINGS_RESEND_S = 1.0
+
+# GLOBAL_COORDINATES and RICOCHET drive to the target at speed = POSITION_KP * distance, up to POSITION_MAX_VEL
+POSITION_KP = 1.0  # [1/s]
+POSITION_MAX_VEL = 3.2  # [m/s], the firmware's limit
 # RICOCHET and CATCH_BALL: once the onboard camera sees the ball coming to the kicker, the robot moves only
 # across the ball path, speed = gain * miss (from the path to the kicker centre); the gain is at least
 # RICOCHET_CAM_GAIN and grows so the miss is closed by RICOCHET_FREEZE_S before the ball comes. CATCH_BALL

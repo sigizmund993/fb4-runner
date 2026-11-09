@@ -14,3 +14,4 @@ gstshark*.env
 .env
 calib_data
 logs
+coefficients.json

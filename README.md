@@ -21,6 +21,7 @@ make flash-fw     # залить на STM32 релиз прошивки из CI 
 | Что | Механизм | Пишет → читает |
 |---|---|---|
 | `robot_id` | `multiprocessing.Value("i")` | `telemetry_transceiver` (принимает id от STM32) → `command_receiver` (ищет себя в vision, шлёт id в UART) |
+| `coefficients_crc` | `multiprocessing.Value("I")` | `command_receiver` (хранит коэффициенты из стратегии) → `telemetry_transceiver` (кладёт в `raspberry_status` телеметрии) |
 | `VisionClient._detections`, `_packages` | `multiprocessing.Manager().list()` — отдельный процесс-сервер, каждое чтение идёт через сокет с пересылкой всего кадра | `Vision_Receiver` → `command_receiver` (`Field.update()`, `get_robot()`) |
 | `/ball_shm`, `cx, cy` в пикселях (uint16) | POSIX shared memory | детектор мяча на Hailo (`yolo26_post.cpp`, запускает `run.sh`, отдельная программа) → `BallDetector` в `command_receiver` и `telemetry_transceiver` |
 
@@ -59,8 +60,19 @@ make flash-fw     # залить на STM32 релиз прошивки из CI 
 |---|---|---|---|
 | RPi → STM | `<5eB??B` | vel_x, vel_y, w, dribbler, kicker [В] (fp16), kicker_mode, angle_mode, beep, robot_id | 16 байт |
 | STM → RPi | `<Be??` | robot_id, напряжение кикера [В] (fp16), ball_deep, ball_front | 7 байт |
+| RPi → STM, настройки | `<8f` | angle_k, angle_b, max_linear_vel, max_linear_accel, max_angular_vel, max_angular_accel, wheel_vel_p, wheel_vel_i (float32); NaN — не менять | 34 байта, синхробайт `0x5A` |
 
-Если формат меняется, прошивку, раннер и teleop надо обновлять вместе: кадры другой длины не распознаются, и робот стоит.
+Если формат меняется, прошивку, раннер и teleop надо обновлять вместе: кадры другой длины не распознаются, и робот стоит. Кадр настроек teleop не шлёт; старая прошивка его пропускает как мусор.
+
+## Коэффициенты регуляторов (SET_COEFFICIENTS)
+
+Стратегия может менять коэффициенты на лету: команда `SET_COEFFICIENTS` с сообщением `Coefficients` (`robot/control.proto`). Это не команда движения: раннер применяет коэффициенты и продолжает текущую команду. Каждая команда — полный набор: незаданное поле — значение по умолчанию (`config.py` у раннера, прошивки — какое было при загрузке STM32).
+
+- Раннер хранит последний набор в `coefficients.json` в корне репозитория (не в git) и загружает при старте. Чтобы вернуть значения по умолчанию, удали файл и перезапусти раннер.
+- Поля STM32 (`angle_k`, `angle_b`, ограничения скорости и ускорения, PID скорости колёс `wheel_vel_p/i`) раннер отправляет кадром настроек по UART сразу и потом раз в `SETTINGS_RESEND_S` (1 с): STM32 их не хранит и после сброса получает снова. Прошивка пишет в лог только изменения (`Settings from the RPi`), PID колёс отправляет моторам по CAN тоже только при изменении.
+- Остальные только у раннера (`src/tuning.py`): `position_kp`, `position_max_vel` (езда в точку по vision для GLOBAL_COORDINATES и RICOCHET), `ricochet_gain`, `catch_gain`, `onboard_max_vel`, `kicker_face_x`, `min_approach_vel`, `freeze_s` (см. «RICOCHET и CATCH_BALL»). Изменения печатаются в журнал (`coefficients: ...`).
+- В медленной части телеметрии (`raspberry_status`, раз в секунду) `coefficients_crc` — CRC32 сохранённых коэффициентов (по имени, значение во float32). Стратегия (`FB4_COEFFICIENTS` в `strategy/bridge/const/coef_const.py`, всегда полная таблица) шлёт `SET_COEFFICIENTS` всем роботам при своём старте, сразу после `RobotCommand.set_coefficients` (OPTIMIZE_PID) и роботу, у которого CRC не совпадает с её, не чаще раза в 2 с (робот, включённый позже). Таблица стратегии перекрывает `FB4_RICOCHET_CAM_GAIN` и `FB4_KICKER_FACE_X` из `.env`. Формулу CRC менять в `tuning.coefficients_crc` и в стратегии вместе.
+- NaN и отрицательные значения игнорируются.
 
 ## Напряжение кикера
 
@@ -181,6 +193,8 @@ WantedBy=multi-user.target
 ## Чейнджлог
 
 ### 2026-11-09
+
+- Коэффициенты регуляторов из стратегии: `SET_COEFFICIENTS`, хранятся в `coefficients.json`, CRC в телеметрии (`coefficients_crc`), кадр настроек по UART для полей STM32 (нужна прошивка с ним). Езда в точку ограничена `position_max_vel`. См. «Коэффициенты регуляторов».
 
 - Лог RICOCHET и CATCH_BALL в `logs/ricochet_<дата>.csv`, см. «RICOCHET и CATCH_BALL → Лог».
 

@@ -12,11 +12,15 @@ def main():
     ball_detector = BallDetector()
     # From the hostname; telemetry_transceiver changes it when the robot's buttons do
     robot_id = multiprocessing.Value("i", config.ROBOT_ID)
+    # Of the coefficients from the strategy: command_receiver keeps them, the telemetry reports it
+    coefficients_crc = multiprocessing.Value("I", 0)
     processes = [
         multiprocessing.Process(target=client.run, name="Vision_Receiver"),
-        multiprocessing.Process(target=command_receiver, args=(client, ball_detector, robot_id), name="Command_Sender"),
         multiprocessing.Process(
-            target=telemetry_transceiver, args=(ball_detector, robot_id), name="Telemetry_Transceiver"
+            target=command_receiver, args=(client, ball_detector, robot_id, coefficients_crc), name="Command_Sender"
+        ),
+        multiprocessing.Process(
+            target=telemetry_transceiver, args=(ball_detector, robot_id, coefficients_crc), name="Telemetry_Transceiver"
         ),
     ]
 

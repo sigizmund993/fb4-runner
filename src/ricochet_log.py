@@ -9,8 +9,8 @@ from pathlib import Path
 from time import monotonic
 from typing import Optional
 
-import config
 from ssl_packet_package.protopy.spbunited.robot import control_pb2
+from tuning import tuning
 
 LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 LOG_KEEP = 20
@@ -98,7 +98,7 @@ class RicochetLog:
                 line.source, _f(line.point.x), _f(line.point.y), _f(line.vel.x), _f(line.vel.y), int(line.coming),
                 _f(line.miss.x), _f(line.miss.y), _f(line.time_left),
             )
-            mode = "" if not line.coming else ("freeze" if line.time_left < config.RICOCHET_FREEZE_S else "align")
+            mode = "" if not line.coming else ("freeze" if line.time_left < tuning.freeze_s else "align")
         else:
             line_cols, mode = ("",) * 9, ""
 

@@ -8,8 +8,9 @@ from google.protobuf.message import DecodeError
 
 import config
 from ball_detector import BallDetector, BallPath
-from protocol.uart import UartCommand
+from protocol.uart import UartCommand, pack_settings
 from ricochet_log import RicochetLog
+from tuning import CoefficientStore, tuning
 from ssl_packet_package.protopy.spbunited.robot import control_pb2
 from utils.auxiliary import aux
 from vision.vision_receiver import Team, VisionClient
@@ -32,6 +33,7 @@ class CommandReceiver:
         self.sock.setblocking(False)
         self.last_cmd = control_pb2.RobotCommand()
         self.last_rx_time = float("-inf")
+        self.coefficients: Optional[control_pb2.Coefficients] = None  # not applied yet
 
     def update(self) -> None:
         """Drains all pending datagrams and keeps the latest valid command."""
@@ -47,6 +49,10 @@ class CommandReceiver:
                 continue
             # ParseFromString does not enforce proto2 required fields
             if not cmd.IsInitialized():
+                continue
+            if cmd.robot_control_type == control_pb2.RobotControlType.SET_COEFFICIENTS:
+                # Not a motion command: the robot keeps running the last one
+                self.coefficients = cmd.coefficients
                 continue
             self.last_cmd = cmd
             self.last_rx_time = monotonic()
@@ -112,7 +118,9 @@ def apply_old_format(cmd, uart_command: UartCommand) -> None:
 
 
 def go_to_point_ignore(robot: Robot, tgt_pos: aux.Point, tgt_ang: float, uart_command: UartCommand) -> None:
-    glob_vel = (tgt_pos - robot.pos) * 1
+    glob_vel = (tgt_pos - robot.pos) * tuning.position_kp
+    if glob_vel.mag() > tuning.position_max_vel:
+        glob_vel = glob_vel.unity() * tuning.position_max_vel
     local_vel = aux.rotate(glob_vel, -robot.ang)
     uart_command.vel_x = local_vel.x
     uart_command.vel_y = local_vel.y
@@ -126,10 +134,10 @@ def hold_heading(uart_command: UartCommand) -> None:
 
 
 def limit_speed(uart_command: UartCommand) -> None:
-    """RICOCHET and CATCH_BALL: the speed is not more than RICOCHET_MAX_VEL, its direction is kept."""
+    """RICOCHET and CATCH_BALL: the speed is not more than onboard_max_vel, its direction is kept."""
     vel = aux.Point(uart_command.vel_x, uart_command.vel_y)
-    if vel.mag() > config.RICOCHET_MAX_VEL:
-        vel = vel.unity() * config.RICOCHET_MAX_VEL
+    if vel.mag() > tuning.onboard_max_vel:
+        vel = vel.unity() * tuning.onboard_max_vel
     uart_command.vel_x, uart_command.vel_y = vel.x, vel.y
 
 
@@ -137,7 +145,7 @@ def follow_ball(ball: Optional[aux.Point], uart_command: UartCommand) -> None:
     """Sideways speed towards the current y of the ball seen by the onboard camera (CATCH_BALL while
     the ball doesn't come to the robot)."""
     if ball is not None:
-        uart_command.vel_y = config.RICOCHET_CAM_GAIN * ball.y
+        uart_command.vel_y = tuning.catch_gain * ball.y
 
 
 @dataclass
@@ -172,21 +180,21 @@ def ball_line(path: BallPath, robot: Optional[Robot], vision_ball: Ball) -> Opti
         if fit is None:
             return None
         point, vel, t = fit
-    to_kicker = aux.Point(config.KICKER_FACE_X, 0) - point
-    coming = to_kicker.mag() > 0 and aux.scal_mult(vel, to_kicker.unity()) >= config.RICOCHET_MIN_APPROACH_VEL
+    to_kicker = aux.Point(tuning.kicker_face_x, 0) - point
+    coming = to_kicker.mag() > 0 and aux.scal_mult(vel, to_kicker.unity()) >= tuning.min_approach_vel
     direction = vel.unity()
     along = aux.scal_mult(to_kicker, direction)
     time_left = along / vel.mag() - (monotonic() - t) if vel.mag() > 0 else float("inf")
     return BallLine(source, point, vel, coming, to_kicker - direction * along, time_left)
 
 
-def align_with_ball_path(miss: aux.Point, time_left: float, uart_command: UartCommand) -> None:
+def align_with_ball_path(miss: aux.Point, time_left: float, min_gain: float, uart_command: UartCommand) -> None:
     """Moves only across the ball path, so the kicker centre gets onto it by the time the ball comes;
-    the last RICOCHET_FREEZE_S [s] it doesn't move (too late to correct, only shakes the robot)."""
-    if time_left < config.RICOCHET_FREEZE_S:
+    the last freeze_s [s] it doesn't move (too late to correct, only shakes the robot)."""
+    if time_left < tuning.freeze_s:
         vel = aux.Point(0, 0)
     else:
-        gain = max(config.RICOCHET_CAM_GAIN, 1 / (time_left - config.RICOCHET_FREEZE_S + 1 / config.CMD_RATE_HZ))
+        gain = max(min_gain, 1 / (time_left - tuning.freeze_s + 1 / config.CMD_RATE_HZ))
         vel = -miss * gain
     uart_command.vel_x, uart_command.vel_y = vel.x, vel.y
 
@@ -209,7 +217,7 @@ def ricochet(
         hold_heading(uart_command)
     line = ball_line(ball_path, robot, vision_ball)
     if line is not None and line.coming:
-        align_with_ball_path(line.miss, line.time_left, uart_command)
+        align_with_ball_path(line.miss, line.time_left, tuning.ricochet_gain, uart_command)
     limit_speed(uart_command)
     if cmd.HasField("kicker_and_dribbler"):
         apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
@@ -234,7 +242,7 @@ def catch_ball(
         hold_heading(uart_command)
     line = ball_line(ball_path, robot, vision_ball)
     if line is not None and line.coming:
-        align_with_ball_path(line.miss, line.time_left, uart_command)
+        align_with_ball_path(line.miss, line.time_left, tuning.catch_gain, uart_command)
     else:
         follow_ball(ball, uart_command)
     limit_speed(uart_command)
@@ -294,8 +302,9 @@ def build_uart_command(
     return uart_command, target_reached, line
 
 
-def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id):
-    """robot_id: multiprocessing.Value shared with telemetry_transceiver, which may change it."""
+def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id, coefficients_crc):
+    """robot_id: multiprocessing.Value shared with telemetry_transceiver, which may change it;
+    coefficients_crc: multiprocessing.Value, the CRC of the coefficients for the telemetry."""
     field = Field(client)
     receiver = CommandReceiver()
     ser = serial.Serial(config.UART_PORT, config.BAUD_RATE)
@@ -305,6 +314,9 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
     ball_path = BallPath()
     robot_vel = aux.Point(0, 0)  # commanded at the last tick
     log = RicochetLog()
+    coefficients = CoefficientStore()
+    coefficients_crc.value = coefficients.crc()
+    next_settings = monotonic()  # the STM32 doesn't keep them over a reset: repeat now and then
 
     next_tick = monotonic()
     while True:
@@ -313,6 +325,18 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
             robot = field.get_robot(team, current_id)
         field.update()
         receiver.update()
+        if receiver.coefficients is not None:
+            changed = coefficients.replace(receiver.coefficients)
+            receiver.coefficients = None
+            if changed:
+                print("coefficients: " + ", ".join(changed))
+                coefficients_crc.value = coefficients.crc()
+                next_settings = monotonic()
+        if monotonic() >= next_settings:
+            frame = pack_settings(coefficients.values)
+            if frame is not None:
+                ser.write(frame)  # the firmware logs only changes
+            next_settings = monotonic() + config.SETTINGS_RESEND_S
         new_frame = ball_detector.update()
         ball_path.update(ball_detector.r_pos, new_frame, robot_vel)
         seen_robot = robot if robot.is_visible(config.VISION_TIMEOUT_S) else None

@@ -23,8 +23,13 @@ def get_rpi_temp_c():
 
 
 def build_telemetry_packet(
-    robot_id: int, tel: Telemetry, ball_pos: Optional[aux.Point], rpi_temp: Optional[float]
+    robot_id: int,
+    tel: Telemetry,
+    ball_pos: Optional[aux.Point],
+    rpi_temp: Optional[float],
+    coefficients_crc: Optional[int],
 ) -> telemetry_pb2.RobotTelemetry:
+    """rpi_temp, coefficients_crc: the slow part (raspberry_status), None in the packets without it."""
     packet = telemetry_pb2.RobotTelemetry()
     packet.robot_id = robot_id
     packet.strategy_telemetry.ball_deep = tel.ball_deep
@@ -35,6 +40,8 @@ def build_telemetry_packet(
         packet.strategy_telemetry.ball_position.y = ball_pos.y
     if rpi_temp is not None:
         packet.raspberry_status.rpi_temp = rpi_temp
+    if coefficients_crc is not None:
+        packet.raspberry_status.coefficients_crc = coefficients_crc
     return packet
 
 
@@ -46,12 +53,13 @@ def rename_rpi(robot_id: int) -> None:
 
 
 class TelemetryTransceiver:
-    def __init__(self, ball_detector: BallDetector, robot_id):
+    def __init__(self, ball_detector: BallDetector, robot_id, coefficients_crc):
         self.ser = serial.Serial(config.UART_PORT, config.BAUD_RATE, timeout=1)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.ball_detector = ball_detector
         self.robot_id = robot_id  
+        self.coefficients_crc = coefficients_crc
         self.parser = FrameParser(TEL_FMT)
         self.last_rpi_status = float("-inf")
         self.id_mismatch: Optional[tuple[int, float]] = None  # (MCU id, since)
@@ -82,11 +90,14 @@ class TelemetryTransceiver:
         for frame in frames:
             tel = Telemetry(*frame)
             self.sync_robot_id(tel.robot_id)
-            rpi_temp = None
+            rpi_temp = coefficients_crc = None
             if monotonic() - self.last_rpi_status > RPI_STATUS_PERIOD_S:
                 rpi_temp = get_rpi_temp_c()
+                coefficients_crc = self.coefficients_crc.value
                 self.last_rpi_status = monotonic()
-            packet = build_telemetry_packet(self.robot_id.value, tel, self.ball_detector.r_pos, rpi_temp)
+            packet = build_telemetry_packet(
+                self.robot_id.value, tel, self.ball_detector.r_pos, rpi_temp, coefficients_crc
+            )
             self.send(packet.SerializeToString())
 
     def send(self, data: bytes) -> None:
@@ -101,9 +112,9 @@ class TelemetryTransceiver:
         self.send_failing = False
 
 
-def telemetry_transceiver(ball_detector: BallDetector, robot_id):
+def telemetry_transceiver(ball_detector: BallDetector, robot_id, coefficients_crc):
     if config.hostname_robot_id() is None:  # the strategy finds the robot by fb4-NN.local
         rename_rpi(robot_id.value)
-    transceiver = TelemetryTransceiver(ball_detector, robot_id)
+    transceiver = TelemetryTransceiver(ball_detector, robot_id, coefficients_crc)
     while True:
         transceiver.step()
