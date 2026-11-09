@@ -1,4 +1,5 @@
 import socket
+from dataclasses import dataclass
 from time import monotonic, sleep
 from typing import Optional
 
@@ -8,6 +9,7 @@ from google.protobuf.message import DecodeError
 import config
 from ball_detector import BallDetector, BallPath
 from protocol.uart import UartCommand
+from ricochet_log import RicochetLog
 from ssl_packet_package.protopy.spbunited.robot import control_pb2
 from utils.auxiliary import aux
 from vision.vision_receiver import Team, VisionClient
@@ -138,10 +140,20 @@ def follow_ball(ball: Optional[aux.Point], uart_command: UartCommand) -> None:
         uart_command.vel_y = config.RICOCHET_CAM_GAIN * ball.y
 
 
-def ball_line(path: BallPath, robot: Optional[Robot], vision_ball: Ball) -> Optional[tuple[aux.Point, float]]:
-    """How the ball coming to the kicker misses it, robot frame: the miss [m] (from its path to the kicker
-    centre, across the path) and the time until the ball comes [s]; None while the camera doesn't see the ball
-    coming to the kicker. The ball may come at any angle, so the miss is across the path, not along the kicker.
+@dataclass
+class BallLine:
+    """The ball path in the robot frame and how it misses the kicker."""
+    source: str  # where the direction is from: "vision" or "camera"
+    point: aux.Point  # [m] a point of the path
+    vel: aux.Point  # [m/s] the ball velocity along it
+    coming: bool  # the ball comes to the kicker (faster than RICOCHET_MIN_APPROACH_VEL)
+    miss: aux.Point  # [m] from the path to the kicker centre, across the path
+    time_left: float  # [s] until the ball comes to the kicker
+
+
+def ball_line(path: BallPath, robot: Optional[Robot], vision_ball: Ball) -> Optional[BallLine]:
+    """How the ball misses the kicker; None while the camera doesn't see the ball (or, without vision, has
+    too few frames). The ball may come at any angle, so the miss is across the path, not along the kicker.
 
     The point of the path is the latest camera frame. The direction is the ball velocity from SSL vision: on the
     field (the robot's own motion doesn't tilt it) and filtered along the whole path, so it is there from the
@@ -151,19 +163,21 @@ def ball_line(path: BallPath, robot: Optional[Robot], vision_ball: Ball) -> Opti
     if last is None:
         return None
     if robot is not None and vision_ball.is_visible(config.VISION_TIMEOUT_S):
+        source = "vision"
         point, t = last
         vel = aux.rotate(vision_ball.vel, -robot.ang)
     else:
+        source = "camera"
         fit = path.fit()
         if fit is None:
             return None
         point, vel, t = fit
     to_kicker = aux.Point(config.KICKER_FACE_X, 0) - point
-    if to_kicker.mag() == 0 or aux.scal_mult(vel, to_kicker.unity()) < config.RICOCHET_MIN_APPROACH_VEL:
-        return None
+    coming = to_kicker.mag() > 0 and aux.scal_mult(vel, to_kicker.unity()) >= config.RICOCHET_MIN_APPROACH_VEL
     direction = vel.unity()
     along = aux.scal_mult(to_kicker, direction)
-    return to_kicker - direction * along, along / vel.mag() - (monotonic() - t)
+    time_left = along / vel.mag() - (monotonic() - t) if vel.mag() > 0 else float("inf")
+    return BallLine(source, point, vel, coming, to_kicker - direction * along, time_left)
 
 
 def align_with_ball_path(miss: aux.Point, time_left: float, uart_command: UartCommand) -> None:
@@ -183,7 +197,7 @@ def ricochet(
     ball_path: BallPath,
     vision_ball: Ball,
     uart_command: UartCommand,
-) -> None:
+) -> Optional[BallLine]:
     """Holds the angle (the current heading without one) and drives to the target the strategy chose for the
     bounce; once the camera sees the ball coming to the kicker, moves only across its path so it hits the
     kicker centre. robot is None without vision: then it keeps its heading and moves only by the camera."""
@@ -193,12 +207,13 @@ def ricochet(
             hold_heading(uart_command)
     else:
         hold_heading(uart_command)
-    miss = ball_line(ball_path, robot, vision_ball)
-    if miss is not None:
-        align_with_ball_path(*miss, uart_command)
+    line = ball_line(ball_path, robot, vision_ball)
+    if line is not None and line.coming:
+        align_with_ball_path(line.miss, line.time_left, uart_command)
     limit_speed(uart_command)
     if cmd.HasField("kicker_and_dribbler"):
         apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
+    return line
 
 
 def catch_ball(
@@ -208,7 +223,7 @@ def catch_ball(
     ball_path: BallPath,
     vision_ball: Ball,
     uart_command: UartCommand,
-) -> None:
+) -> Optional[BallLine]:
     """Turns to the angle; once the ball comes to the kicker, moves only across its path, before that
     sideways to the ball seen by the camera, without driving forward.
     robot is None without vision: then it keeps its current heading."""
@@ -217,13 +232,14 @@ def catch_ball(
         uart_command.angle_mode = True
     else:
         hold_heading(uart_command)
-    miss = ball_line(ball_path, robot, vision_ball)
-    if miss is not None:
-        align_with_ball_path(*miss, uart_command)
+    line = ball_line(ball_path, robot, vision_ball)
+    if line is not None and line.coming:
+        align_with_ball_path(line.miss, line.time_left, uart_command)
     else:
         follow_ball(ball, uart_command)
     limit_speed(uart_command)
     apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
+    return line
 
 
 def build_uart_command(
@@ -232,7 +248,7 @@ def build_uart_command(
     ball: Optional[aux.Point],
     ball_path: BallPath,
     vision_ball: Ball,
-) -> tuple[UartCommand, bool]:
+) -> tuple[UartCommand, bool, Optional[BallLine]]:
     """Translates a protobuf command into a UART command.
 
     robot is None while SSL vision doesn't see it. ball is the ball seen by the onboard camera, in the robot
@@ -240,11 +256,12 @@ def build_uart_command(
     Target commands send a stop while vision doesn't see the robot (its position would be stale)
     and resume when it is seen again; RICOCHET and CATCH_BALL then keep the heading and only follow
     the ball with the onboard camera.
-    Returns the command and whether the current target is reached and
-    the stored command should be reset.
+    Returns the command, whether the current target is reached and the stored command should be reset,
+    and the ball path of RICOCHET and CATCH_BALL (for the log).
     """
     uart_command = UartCommand(beep=cmd.beep)
     target_reached = False
+    line = None
     match cmd.robot_control_type:
         case control_pb2.RobotControlType.NEW_FORMAT:
             apply_speed_control(cmd.new_format.speed_control, uart_command)
@@ -267,14 +284,14 @@ def build_uart_command(
                 target_reached = True
         case control_pb2.RobotControlType.RICOCHET:
             # Never "reached": the robot waits at the target for the ball
-            ricochet(cmd.ricochet, robot, ball_path, vision_ball, uart_command)
+            line = ricochet(cmd.ricochet, robot, ball_path, vision_ball, uart_command)
         case control_pb2.RobotControlType.CATCH_BALL:
             # Never "reached": the robot waits for the ball until the strategy sends another command
-            catch_ball(cmd.catch_ball, robot, ball, ball_path, vision_ball, uart_command)
+            line = catch_ball(cmd.catch_ball, robot, ball, ball_path, vision_ball, uart_command)
         case control_pb2.RobotControlType.CAP_VEL_AND_ACCEL:
             # TODO: implement
             pass
-    return uart_command, target_reached
+    return uart_command, target_reached, line
 
 
 def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id):
@@ -287,6 +304,7 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
     period = 1 / config.CMD_RATE_HZ
     ball_path = BallPath()
     robot_vel = aux.Point(0, 0)  # commanded at the last tick
+    log = RicochetLog()
 
     next_tick = monotonic()
     while True:
@@ -298,9 +316,11 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
         new_frame = ball_detector.update()
         ball_path.update(ball_detector.r_pos, new_frame, robot_vel)
         seen_robot = robot if robot.is_visible(config.VISION_TIMEOUT_S) else None
-        uart_command, target_reached = build_uart_command(
-            receiver.current_command(), seen_robot, ball_detector.r_pos, ball_path, field.ball
+        cmd = receiver.current_command()
+        uart_command, target_reached, line = build_uart_command(
+            cmd, seen_robot, ball_detector.r_pos, ball_path, field.ball
         )
+        log.write(cmd, seen_robot, field.ball, ball_detector, new_frame, ball_path, line, uart_command)
         robot_vel = aux.Point(uart_command.vel_x, uart_command.vel_y)
         if target_reached:
             receiver.last_cmd = control_pb2.RobotCommand()

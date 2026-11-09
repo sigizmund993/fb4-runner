@@ -13,3 +13,4 @@ metadata
 gstshark*.env
 .env
 calib_data
+logs

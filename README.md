@@ -102,6 +102,21 @@ Id робота хранится только в hostname RPi (`fb4-NN`, в mDNS
 - Пока мяч не летит к кикеру, RICOCHET едет в `(x, y)`, а CATCH_BALL едет вбок к текущему y мяча с камеры (`vel_y = FB4_RICOCHET_CAM_GAIN × y`).
 - Скорость не больше `RICOCHET_MAX_VEL` (2 м/с), направление при этом сохраняется.
 
+### Лог
+
+`command_receiver` пишет CSV по строке на тик (100 Гц), пока идёт RICOCHET или CATCH_BALL, и ещё 0.5 с после, чтобы был виден исход (`cmd` = `after:<команда>`). Один файл на запуск раннера, `logs/ricochet_<дата>.csv` (не в git), хранятся последние 20. Колонки описаны в `src/ricochet_log.py`:
+
+- команда стратегии (`cmd_x/y/angle`), робот по vision (поза и скорость), мяч по vision и возраст его последнего кадра (`vball_age`);
+- мяч с камеры: пиксель, положение в системе робота, `cam_new` — новый кадр, `path_frames` — кадров в `BallPath`;
+- траектория (`line_*`): откуда направление (`vision` / `camera`), точка, скорость, `coming`, промах, время до кикера; `mode` — `align`, `freeze` или пусто (команда как есть);
+- что ушло в UART; `dt` — время с прошлого тика (0.01, если цикл успевает).
+
+Забрать с робота:
+
+```bash
+scp 'root@fb4-NN.local:/root/fb4-runner/logs/ricochet_*.csv' .
+```
+
 ## Калибровка камеры
 
 Пиксель мяча → метры в системе робота: развёртка fisheye (`src/to_real_coords/camera_params_fisheye.npz`, по шахматке) и гомография плоскости поля (`homography_matrix.npy`). Гомографию можно подогнать по SSL vision: vision даёт мяч и робота на поле, камера — пиксель мяча.
@@ -164,6 +179,10 @@ WantedBy=multi-user.target
 Время загрузки: `systemd-analyze`, `systemd-analyze blame`, `systemd-analyze critical-chain fb4-runner.service`.
 
 ## Чейнджлог
+
+### 2026-11-09
+
+- Лог RICOCHET и CATCH_BALL в `logs/ricochet_<дата>.csv`, см. «RICOCHET и CATCH_BALL → Лог».
 
 ### 2026-11-08
 
