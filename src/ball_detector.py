@@ -51,7 +51,8 @@ class BallDetector:
         self._last_sample = float("-inf")
 
     def update(self) -> bool:
-        """Reads the detector; True on a new camera frame with the ball."""
+        """Reads the detector; True on a new camera frame with the ball. A ball behind the robot or further than
+        CAM_MAX_DIST is no ball (r_pos None), p_pos keeps its pixel for the log."""
         cx, cy = read_pixel(self.shm)
         if (cx, cy) == NO_BALL:
             self.r_pos = None
@@ -63,7 +64,11 @@ class BallDetector:
             return False  # still the same camera frame
         self._last_px, self._last_sample = (cx, cy), now
         self.p_pos = aux.Point(cx, cy)
-        self.r_pos = calib_to_robot_frame(self.coord_converter.get_coords(self.p_pos))
+        pos = calib_to_robot_frame(self.coord_converter.get_coords(self.p_pos))
+        if pos.x < 0 or pos.mag() > config.CAM_MAX_DIST:
+            self.r_pos = None  # above the horizon: a false detection, or too far to tell where
+            return False
+        self.r_pos = pos
         return True
 
 

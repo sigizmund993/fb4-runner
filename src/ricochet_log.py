@@ -10,7 +10,6 @@ from time import monotonic
 from typing import Optional
 
 from ssl_packet_package.protopy.spbunited.robot import control_pb2
-from tuning import tuning
 
 LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 LOG_KEEP = 20
@@ -24,8 +23,10 @@ COLUMNS = (
     "robot_x", "robot_y", "robot_ang", "robot_vx", "robot_vy",  # SSL vision, field; empty while not seen
     "vball_age", "vball_x", "vball_y", "vball_vx", "vball_vy",  # SSL vision ball, field; age [s] of its last capture
     "cam_cx", "cam_cy", "cam_x", "cam_y", "cam_new", "path_frames",  # onboard camera: pixel, robot frame
-    "line_src", "line_x", "line_y", "line_vx", "line_vy", "coming", "miss_x", "miss_y", "time_left",  # robot frame
-    "mode",  # align: moves across the ball path, freeze: the last RICOCHET_FREEZE_S, empty: the command's own
+    # robot frame; line_src: "<point>/<direction>" (command_receiver.BallLine)
+    "line_src", "line_x", "line_y", "line_vx", "line_vy", "coming", "miss_x", "miss_y", "time_left",
+    "mode",  # align: moves across the ball path, freeze: too late to correct, hold: the ball just stopped coming,
+    # empty: the command's own
     "out_vx", "out_vy", "out_w", "out_angle_mode", "out_dribbler", "out_kicker_v",  # sent over UART
 )
 
@@ -98,7 +99,7 @@ class RicochetLog:
                 line.source, _f(line.point.x), _f(line.point.y), _f(line.vel.x), _f(line.vel.y), int(line.coming),
                 _f(line.miss.x), _f(line.miss.y), _f(line.time_left),
             )
-            mode = "" if not line.coming else ("freeze" if line.time_left < tuning.freeze_s else "align")
+            mode = line.mode
         else:
             line_cols, mode = ("",) * 9, ""
 

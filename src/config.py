@@ -64,6 +64,23 @@ KICKER_FACE_X = float(envfile.get("FB4_KICKER_FACE_X", "0.10"))  # [m]
 RICOCHET_MIN_APPROACH_VEL = 0.3  # [m/s]
 # The robot stops correcting this long before the ball comes
 RICOCHET_FREEZE_S = 0.05  # [s]
+# The robot's speed follows a command this late (ricochet log 2026-11-11: 0.1-0.2 s with vision's own delay).
+# The miss is predicted that far ahead with the robot's current speed and closed that much earlier: commands
+# later than RICOCHET_FREEZE_S + ROBOT_RESPONSE_S before the ball would act only after it
+ROBOT_RESPONSE_S = 0.1  # [s]
+# The onboard camera's ball is a false detection (above the horizon the homography gives anything) behind the
+# robot or further than this
+CAM_MAX_DIST = 2.5  # [m]
+# The camera's distance is right only near the robot (the homography fits the field near it; at 1.5 m it is
+# 30% short): further than this the point of the ball path is the SSL vision ball
+CAM_TRUST_DIST = 0.6  # [m]
+# SSL vision ball velocity faster than this, or more than BALL_DIR_TOL_DEG off the line through the camera
+# frames, is a glitch: the line through the camera frames is used
+BALL_MAX_VEL = 8.0  # [m/s]
+BALL_DIR_TOL_DEG = 45.0
+# The ball stopped "coming" (lost for a moment, a glitch) less than this ago: the robot holds still instead of
+# driving to the RICOCHET target
+COMING_HOLD_S = 0.15  # [s]
 # The ball path is a line through the camera frames of the last BALL_PATH_S, at least BALL_PATH_MIN_FRAMES
 # of them (the camera runs at 30 fps)
 BALL_PATH_S = 0.2  # [s]

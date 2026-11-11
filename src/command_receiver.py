@@ -1,3 +1,4 @@
+import math
 import socket
 from dataclasses import dataclass
 from time import monotonic, sleep
@@ -151,35 +152,59 @@ def follow_ball(ball: Optional[aux.Point], uart_command: UartCommand) -> None:
 @dataclass
 class BallLine:
     """The ball path in the robot frame and how it misses the kicker."""
-    source: str  # where the direction is from: "vision" or "camera"
+    source: str  # "<point>/<direction>": point "camera" or "vision", direction "vision" or "fit" (camera frames)
     point: aux.Point  # [m] a point of the path
     vel: aux.Point  # [m/s] the ball velocity along it
-    coming: bool  # the ball comes to the kicker (faster than RICOCHET_MIN_APPROACH_VEL)
+    coming: bool  # the ball comes to the kicker (faster than min_approach_vel)
     miss: aux.Point  # [m] from the path to the kicker centre, across the path
     time_left: float  # [s] until the ball comes to the kicker
+    mode: str = ""  # set by align_with_ball_path: "align", "freeze"; "hold" by hold_after_coming
+
+
+def vision_ball_vel_ok(vel: aux.Point, fit: Optional[tuple[aux.Point, aux.Point, float]]) -> bool:
+    """The SSL vision ball velocity (robot frame) is not a glitch: not faster than BALL_MAX_VEL and, when the
+    camera frames give a direction, not more than BALL_DIR_TOL_DEG off it."""
+    if vel.mag() > config.BALL_MAX_VEL:
+        return False
+    if fit is None or fit[1].mag() < tuning.min_approach_vel or vel.mag() == 0:
+        return True
+    cos = aux.scal_mult(vel.unity(), fit[1].unity())
+    return cos >= math.cos(math.radians(config.BALL_DIR_TOL_DEG))
 
 
 def ball_line(path: BallPath, robot: Optional[Robot], vision_ball: Ball) -> Optional[BallLine]:
-    """How the ball misses the kicker; None while the camera doesn't see the ball (or, without vision, has
-    too few frames). The ball may come at any angle, so the miss is across the path, not along the kicker.
+    """How the ball misses the kicker; None without a ball in front of the robot within CAM_MAX_DIST. The ball
+    may come at any angle, so the miss is across the path, not along the kicker.
 
-    The point of the path is the latest camera frame. The direction is the ball velocity from SSL vision: on the
-    field (the robot's own motion doesn't tilt it) and filtered along the whole path, so it is there from the
-    first camera frame. Without it (vision lost the ball, e.g. the robot hides it) the line through the camera
-    frames, which needs BALL_PATH_MIN_FRAMES of them."""
-    last = path.last()
-    if last is None:
-        return None
+    The point of the path: the latest camera frame within CAM_TRUST_DIST (the camera is accurate only near the
+    robot), else the SSL vision ball in the robot frame (by the robot's vision pose), else the camera frame.
+    The direction: the SSL vision ball velocity, on the field (the robot's own motion doesn't tilt it) and
+    filtered along the whole path. Without it (vision lost the ball or the robot, or a glitch: see
+    vision_ball_vel_ok) the line through the camera frames, which needs BALL_PATH_MIN_FRAMES of them."""
+    cam = path.last()
+    fit = path.fit()
+    vis_point = vis_vel = None
     if robot is not None and vision_ball.is_visible(config.VISION_TIMEOUT_S):
-        source = "vision"
-        point, t = last
-        vel = aux.rotate(vision_ball.vel, -robot.ang)
-    else:
-        source = "camera"
-        fit = path.fit()
+        vis_point = aux.rotate(vision_ball.pos - robot.pos, -robot.ang)
+        if vis_point.x <= tuning.kicker_face_x or vis_point.mag() > config.CAM_MAX_DIST:
+            vis_point = None  # beside or behind the kicker, or out of the camera's range
+        vis_vel = aux.rotate(vision_ball.vel, -robot.ang)
+        if not vision_ball_vel_ok(vis_vel, fit):
+            vis_vel = None
+
+    if vis_vel is None:
         if fit is None:
             return None
         point, vel, t = fit
+        source = "camera/fit"
+    else:
+        vel = vis_vel
+        if cam is not None and (cam[0].mag() <= config.CAM_TRUST_DIST or vis_point is None):
+            (point, t), source = cam, "camera/vision"
+        elif vis_point is not None:
+            point, t, source = vis_point, vision_ball.last_update, "vision/vision"
+        else:
+            return None
     to_kicker = aux.Point(tuning.kicker_face_x, 0) - point
     coming = to_kicker.mag() > 0 and aux.scal_mult(vel, to_kicker.unity()) >= tuning.min_approach_vel
     direction = vel.unity()
@@ -188,15 +213,48 @@ def ball_line(path: BallPath, robot: Optional[Robot], vision_ball: Ball) -> Opti
     return BallLine(source, point, vel, coming, to_kicker - direction * along, time_left)
 
 
-def align_with_ball_path(miss: aux.Point, time_left: float, min_gain: float, uart_command: UartCommand) -> None:
-    """Moves only across the ball path, so the kicker centre gets onto it by the time the ball comes;
-    the last freeze_s [s] it doesn't move (too late to correct, only shakes the robot)."""
-    if time_left < tuning.freeze_s:
+def robot_frame_vel(robot: Optional[Robot]) -> aux.Point:
+    """The robot's speed by SSL vision in its own frame; zero without vision."""
+    return aux.rotate(robot.vel, -robot.ang) if robot is not None else aux.Point(0, 0)
+
+
+def align_with_ball_path(line: BallLine, robot_vel: aux.Point, min_gain: float, uart_command: UartCommand) -> None:
+    """Moves only across the ball path, so the kicker centre gets onto it by the time the ball comes.
+
+    The robot follows a command ROBOT_RESPONSE_S late, meanwhile it keeps its current speed robot_vel (robot
+    frame): the miss is predicted that far ahead and closed by freeze_s + ROBOT_RESPONSE_S before the ball.
+    Later it doesn't move (a command then would act only after the ball, it only shakes the robot)."""
+    direction = line.vel.unity()
+    vel_across = robot_vel - direction * aux.scal_mult(robot_vel, direction)
+    miss = line.miss + vel_across * config.ROBOT_RESPONSE_S
+    time_to_close = line.time_left - config.ROBOT_RESPONSE_S - tuning.freeze_s
+    if time_to_close < 0:
         vel = aux.Point(0, 0)
+        line.mode = "freeze"
     else:
-        gain = max(min_gain, 1 / (time_left - tuning.freeze_s + 1 / config.CMD_RATE_HZ))
+        gain = max(min_gain, 1 / (time_to_close + 1 / config.CMD_RATE_HZ))
         vel = -miss * gain
+        line.mode = "align"
     uart_command.vel_x, uart_command.vel_y = vel.x, vel.y
+
+
+# monotonic() when a ball last came to the kicker (hold_after_coming)
+_last_coming = float("-inf")
+
+
+def hold_after_coming(line: Optional[BallLine], uart_command: UartCommand) -> bool:
+    """Right after the ball stopped "coming" (lost for a frame, a vision glitch) the robot stands still for
+    COMING_HOLD_S rather than driving off to the target. True when it holds."""
+    global _last_coming
+    if line is not None and line.coming:
+        _last_coming = monotonic()
+        return False
+    if monotonic() - _last_coming > config.COMING_HOLD_S:
+        return False
+    uart_command.vel_x = uart_command.vel_y = 0
+    if line is not None:
+        line.mode = "hold"
+    return True
 
 
 def ricochet(
@@ -207,8 +265,8 @@ def ricochet(
     uart_command: UartCommand,
 ) -> Optional[BallLine]:
     """Holds the angle (the current heading without one) and drives to the target the strategy chose for the
-    bounce; once the camera sees the ball coming to the kicker, moves only across its path so it hits the
-    kicker centre. robot is None without vision: then it keeps its heading and moves only by the camera."""
+    bounce; once the ball comes to the kicker, moves only across its path so it hits the kicker centre.
+    robot is None without vision: then it keeps its heading and moves only by the camera."""
     if robot is not None:
         go_to_point_ignore(robot, aux.Point(cmd.x, cmd.y), cmd.angle, uart_command)
         if not cmd.HasField("angle"):
@@ -217,7 +275,8 @@ def ricochet(
         hold_heading(uart_command)
     line = ball_line(ball_path, robot, vision_ball)
     if line is not None and line.coming:
-        align_with_ball_path(line.miss, line.time_left, tuning.ricochet_gain, uart_command)
+        align_with_ball_path(line, robot_frame_vel(robot), tuning.ricochet_gain, uart_command)
+    hold_after_coming(line, uart_command)
     limit_speed(uart_command)
     if cmd.HasField("kicker_and_dribbler"):
         apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
@@ -242,8 +301,8 @@ def catch_ball(
         hold_heading(uart_command)
     line = ball_line(ball_path, robot, vision_ball)
     if line is not None and line.coming:
-        align_with_ball_path(line.miss, line.time_left, tuning.catch_gain, uart_command)
-    else:
+        align_with_ball_path(line, robot_frame_vel(robot), tuning.catch_gain, uart_command)
+    elif not hold_after_coming(line, uart_command):
         follow_ball(ball, uart_command)
     limit_speed(uart_command)
     apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
