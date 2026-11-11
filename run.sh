@@ -21,9 +21,8 @@ setting() {
     echo "${value:-$default}"
 }
 
-# Camera: the ISP gives RGB itself (no videoconvert on the CPU). GStreamer's RGB/BGR are libcamera's BGR888/RGB888:
-# if the ball looks blue in the stream, set FB4_CAM_FORMAT=BGR
-CAM_FORMAT=$(setting FB4_CAM_FORMAT RGB)
+# Camera: NV12 from the ISP, converted to RGB on the CPU in 2 threads. RGB straight from the ISP would skip the
+# conversion, but hailonet crashes (SIGSEGV) on libcamerasrc's own buffers: videoconvert gives it a buffer of its own
 # Exposure [us] and analogue gain, manual: a short exposure blurs a moving ball less, and the frame is fresher.
 # auto: the camera's auto exposure (up to a frame, ~30 ms indoors)
 CAM_EXPOSURE_US=$(setting FB4_CAM_EXPOSURE_US 5000)
@@ -85,12 +84,14 @@ fi
 echo "[INFO] HEF:     $HEF"
 echo "[INFO] SO:      $SO"
 echo "[INFO] Quality: $QUALITY"
-echo "[INFO] Camera:  $CAM_FORMAT, exposure ${CAM_EXPOSURE_US} us, gain ${CAM_GAIN}"
+echo "[INFO] Camera:  exposure ${CAM_EXPOSURE_US} us, gain ${CAM_GAIN}"
 echo ""
 
 gst-launch-1.0 -e $PREFIX \
 libcamerasrc $CAM_CONTROLS ! \
-"video/x-raw,format=${CAM_FORMAT},width=1280,height=960,framerate=30/1" ! \
+"video/x-raw,format=NV12,width=1280,height=960,framerate=30/1" ! \
+videoconvert n-threads=2 ! \
+"video/x-raw,format=RGB" ! \
 queue leaky=upstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! \
 hailonet \
 hef-path="$HEF" \
