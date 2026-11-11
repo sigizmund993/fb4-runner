@@ -11,6 +11,29 @@
 #   VLC:    rtsp://<RPI_IP>:8554/ball
 #   ffplay: ffplay rtsp://<RPI_IP>:8554/ball
 
+# Settings from the environment, else the repository's .env (as src/utils/envfile.py), else the default
+ENV_FILE="${FB4_ENV_FILE:-$(dirname "$(readlink -f "$0")")/.env}"
+setting() {
+    local name="$1" default="$2" value="${!1}"
+    if [ -z "$value" ] && [ -f "$ENV_FILE" ]; then
+        value=$(sed -n "s/^\(export \)\?$name=//p" "$ENV_FILE" | tail -n 1 | sed 's/ #.*//; s/^["'"'"']//; s/["'"'"']$//')
+    fi
+    echo "${value:-$default}"
+}
+
+# Camera: the ISP gives RGB itself (no videoconvert on the CPU). GStreamer's RGB/BGR are libcamera's BGR888/RGB888:
+# if the ball looks blue in the stream, set FB4_CAM_FORMAT=BGR
+CAM_FORMAT=$(setting FB4_CAM_FORMAT RGB)
+# Exposure [us] and analogue gain, manual: a short exposure blurs a moving ball less, and the frame is fresher.
+# auto: the camera's auto exposure (up to a frame, ~30 ms indoors)
+CAM_EXPOSURE_US=$(setting FB4_CAM_EXPOSURE_US 5000)
+CAM_GAIN=$(setting FB4_CAM_GAIN 8.0)
+if [ "$CAM_EXPOSURE_US" = "auto" ]; then
+    CAM_CONTROLS=""
+else
+    CAM_CONTROLS="exposure-time-mode=manual exposure-time=${CAM_EXPOSURE_US} analogue-gain-mode=manual analogue-gain=${CAM_GAIN}"
+fi
+
 HEF="/root/fb4-runner/10_hours_brainrot.hef"
 SO="/root/fb4-runner/libyolo26_post.so"
 MEDIAMTX="/root/mediamtx"
@@ -62,13 +85,12 @@ fi
 echo "[INFO] HEF:     $HEF"
 echo "[INFO] SO:      $SO"
 echo "[INFO] Quality: $QUALITY"
+echo "[INFO] Camera:  $CAM_FORMAT, exposure ${CAM_EXPOSURE_US} us, gain ${CAM_GAIN}"
 echo ""
 
 gst-launch-1.0 -e $PREFIX \
-libcamerasrc ! \
-"video/x-raw,format=NV12,width=1280,height=960,framerate=30/1" ! \
-videoconvert ! \
-"video/x-raw,format=RGB" ! \
+libcamerasrc $CAM_CONTROLS ! \
+"video/x-raw,format=${CAM_FORMAT},width=1280,height=960,framerate=30/1" ! \
 queue leaky=upstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! \
 hailonet \
 hef-path="$HEF" \
