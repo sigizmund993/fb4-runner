@@ -8,6 +8,7 @@ from typing import Optional
 import config
 from to_real_coords.coord_converter import CoordConverter
 from utils.auxiliary import aux
+from vision.vision import Robot
 
 CALIB_DIR = Path(__file__).parent / "to_real_coords"
 # Written by yolo26_post.cpp when no ball is detected
@@ -73,51 +74,79 @@ class BallDetector:
 
 
 class BallPath:
-    """The ball's path on the field from the last camera frames, robot frame (x forward, y left).
+    """The ball's path from the last camera frames, given in the robot frame (x forward, y left).
 
-    The robot moves meanwhile: the stored positions are shifted back by its own motion (the commanded speed),
-    so they stay where the ball was on the field and the path is not tilted by the robot's speed.
-    The heading is taken as held: RICOCHET and CATCH_BALL turn to their angle before the ball comes."""
+    A frame is dated by its capture, CAM_DELAY_S before it is read. With the robot's SSL vision pose the frames
+    are kept on the field: each camera point is put there by the pose at its capture, so neither the robot's
+    motion nor its turns tilt the path, and the path is brought to the robot's current pose when asked.
+    Without the pose (vision doesn't see the robot) the frames are kept in the robot frame, shifted back by the
+    robot's estimated motion (the command through the robot's lag, see command_receiver), the heading taken as
+    held."""
 
     def __init__(self) -> None:
-        self.frames: deque[tuple[float, aux.Point]] = deque()  # (monotonic, ball position)
+        # (capture monotonic(), ball in the robot frame (shifted by the estimated motion), ball on the field or
+        # None without the robot's pose)
+        self.frames: deque[tuple[float, aux.Point, Optional[aux.Point]]] = deque()
         self._last_update = monotonic()
 
-    def update(self, ball: Optional[aux.Point], new_frame: bool, robot_vel: aux.Point) -> None:
-        """ball, new_frame: BallDetector.r_pos, update(); robot_vel: the speed commanded since the last call."""
+    def update(self, ball: Optional[aux.Point], new_frame: bool, robot: Optional[Robot], robot_vel: aux.Point) -> None:
+        """ball, new_frame: BallDetector.r_pos, update(); robot: the robot seen by SSL vision or None;
+        robot_vel: its estimated speed (robot frame) since the last call."""
         now = monotonic()
         shift = robot_vel * (now - self._last_update)
         self._last_update = now
         if ball is None:
             self.frames.clear()
             return
-        self.frames = deque((t, p - shift) for t, p in self.frames if now - t <= config.BALL_PATH_S)
+        self.frames = deque(
+            (t, p - shift, f) for t, p, f in self.frames if now - t <= config.BALL_PATH_S + config.CAM_DELAY_S
+        )
         if new_frame:
-            self.frames.append((now, ball))
+            t = now - config.CAM_DELAY_S
+            on_field = None
+            if robot is not None:
+                pos, ang = robot_pose_at(robot, t)
+                on_field = pos + aux.rotate(ball, ang)
+            self.frames.append((t, ball, on_field))
 
-    def last(self) -> Optional[tuple[aux.Point, float]]:
-        """The latest frame: (ball position, monotonic() of the frame); None without frames."""
+    def _robot_frame(self, robot: Optional[Robot]) -> list[tuple[float, aux.Point]]:
+        """The frames in the current robot frame: by the field points and the robot's current pose when all
+        frames have them, else the shifted ones."""
+        if robot is not None and all(f is not None for _, _, f in self.frames):
+            return [(t, aux.rotate(f - robot.pos, -robot.ang)) for t, _, f in self.frames]
+        return [(t, p) for t, p, _ in self.frames]
+
+    def last(self, robot: Optional[Robot]) -> Optional[tuple[aux.Point, float]]:
+        """The latest frame: (ball position now in the robot frame, its capture monotonic()); None without
+        frames."""
         if not self.frames:
             return None
-        t, p = self.frames[-1]
+        t, p = self._robot_frame(robot)[-1]
         return p, t
 
-    def fit(self) -> Optional[tuple[aux.Point, aux.Point, float]]:
+    def fit(self, robot: Optional[Robot]) -> Optional[tuple[aux.Point, aux.Point, float]]:
         """Least squares line through the frames: (a point of the path, the ball velocity [m/s], monotonic()
-        when the ball was at that point); None with fewer than BALL_PATH_MIN_FRAMES frames."""
-        n = len(self.frames)
+        when the ball was at that point), robot frame; None with fewer than BALL_PATH_MIN_FRAMES frames."""
+        frames = self._robot_frame(robot)
+        n = len(frames)
         if n < config.BALL_PATH_MIN_FRAMES:
             return None
-        t_mean = sum(t for t, _ in self.frames) / n
-        p_mean = aux.Point(sum(p.x for _, p in self.frames) / n, sum(p.y for _, p in self.frames) / n)
-        t_var = sum((t - t_mean) ** 2 for t, _ in self.frames)
+        t_mean = sum(t for t, _ in frames) / n
+        p_mean = aux.Point(sum(p.x for _, p in frames) / n, sum(p.y for _, p in frames) / n)
+        t_var = sum((t - t_mean) ** 2 for t, _ in frames)
         if t_var == 0:
             return None
         vel = aux.Point(
-            sum((t - t_mean) * (p.x - p_mean.x) for t, p in self.frames),
-            sum((t - t_mean) * (p.y - p_mean.y) for t, p in self.frames),
+            sum((t - t_mean) * (p.x - p_mean.x) for t, p in frames),
+            sum((t - t_mean) * (p.y - p_mean.y) for t, p in frames),
         ) / t_var
         return p_mean, vel, t_mean
+
+
+def robot_pose_at(robot: Robot, t: float) -> tuple[aux.Point, float]:
+    """The robot's SSL vision pose (position, heading) at monotonic() t, from its last one and its speed."""
+    dt = t - robot.last_update
+    return robot.pos + robot.vel * dt, robot.ang + robot.angle_vel * dt
 
 
 def calib_to_robot_frame(p: aux.Point) -> aux.Point:

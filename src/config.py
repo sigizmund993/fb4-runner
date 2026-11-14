@@ -64,23 +64,41 @@ KICKER_FACE_X = float(envfile.get("FB4_KICKER_FACE_X", "0.10"))  # [m]
 RICOCHET_MIN_APPROACH_VEL = 0.3  # [m/s]
 # The robot stops correcting this long before the ball comes
 RICOCHET_FREEZE_S = 0.05  # [s]
-# The robot's speed follows a command this late (ricochet log 2026-11-11: 0.1-0.2 s with vision's own delay).
-# The miss is predicted that far ahead with the robot's current speed and closed that much earlier: commands
-# later than RICOCHET_FREEZE_S + ROBOT_RESPONSE_S before the ball would act only after it
-ROBOT_RESPONSE_S = 0.1  # [s]
+# The robot's speed follows a command this late, as SSL vision sees it (ricochet logs 2026-11-14: 0.25-0.3 s;
+# 0.1 made the alignment overshoot and swing). The miss is predicted that far ahead with the robot's current
+# speed and closed that much earlier: commands later than RICOCHET_FREEZE_S + ROBOT_RESPONSE_S before the ball
+# would act only after it. Without the robot's vision pose its speed is taken as the command through a lag of
+# this time constant (BallPath)
+ROBOT_RESPONSE_S = 0.25  # [s]
+# The alignment gain grows towards the ball but not above this: with the robot's lag a higher one overshoots
+# the ball path and swings across it
+RICOCHET_MAX_GAIN = 8.0  # [1/s]
+# The robot's acceleration across the ball path (ricochet logs 2026-11-14: 1.5-2.5 m/s^2 after a command step).
+# A ball that would pass further than ALIGN_REACH_MARGIN beyond what the robot can drive by then (from
+# ROBOT_RESPONSE_S on) is not aligned with: the robot keeps the command's own motion
+ROBOT_ACCEL = 2.5  # [m/s^2]
+ALIGN_REACH_MARGIN = 0.09  # [m], the robot radius: such a ball still hits the robot
 # The onboard camera's ball is a false detection (above the horizon the homography gives anything) behind the
 # robot or further than this
 CAM_MAX_DIST = 2.5  # [m]
-# The camera's distance is right only near the robot (the homography fits the field near it; at 1.5 m it is
-# 30% short): further than this the point of the ball path is the SSL vision ball
-CAM_TRUST_DIST = 0.6  # [m]
-# SSL vision ball velocity faster than this, or more than BALL_DIR_TOL_DEG off the line through the camera
-# frames, is a glitch: the line through the camera frames is used
+# The camera's distance is right only near the robot (the homography fits the field near it; ricochet logs
+# 2026-11-14: within 1-4 cm of SSL vision up to 0.3 m, 8-17 cm short at 0.4-0.6 m, up to 28 cm at 1 m): further
+# than this the point of the ball path is the SSL vision ball
+CAM_TRUST_DIST = 0.35  # [m]
+# A camera frame was captured this long before it is read from the shared memory, on the clock of the SSL vision
+# frames (their monotonic() on arrival). Ricochet logs 2026-11-14: the camera is 20-30 ms behind SSL vision
+CAM_DELAY_S = 0.03  # [s]
+# SSL vision ball velocity faster than this is a glitch: the line through the camera frames is used
 BALL_MAX_VEL = 8.0  # [m/s]
-BALL_DIR_TOL_DEG = 45.0
 # The ball stopped "coming" (lost for a moment, a glitch) less than this ago: the robot holds still instead of
-# driving to the RICOCHET target
+# driving to the RICOCHET target. Meanwhile the ball keeps "coming" down to COMING_EXIT_FACTOR of
+# RICOCHET_MIN_APPROACH_VEL and without the reach check (ALIGN_REACH_MARGIN), so it doesn't flicker
 COMING_HOLD_S = 0.15  # [s]
+COMING_EXIT_FACTOR = 0.5
+# After a switch of the RICOCHET/CATCH_BALL mode (aligning, frozen, holding, the command's own) the command
+# speed changes by at most this until it catches up with the new mode's: the switches jerked the robot by up to
+# 2 m/s within a tick
+MODE_SWITCH_ACCEL = 3.0  # [m/s^2]
 # The ball path is a line through the camera frames of the last BALL_PATH_S, at least BALL_PATH_MIN_FRAMES
 # of them (the camera runs at 30 fps)
 BALL_PATH_S = 0.2  # [s]

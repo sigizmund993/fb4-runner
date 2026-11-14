@@ -1,4 +1,3 @@
-import math
 import socket
 from dataclasses import dataclass
 from time import monotonic, sleep
@@ -155,21 +154,11 @@ class BallLine:
     source: str  # "<point>/<direction>": point "camera" or "vision", direction "vision" or "fit" (camera frames)
     point: aux.Point  # [m] a point of the path
     vel: aux.Point  # [m/s] the ball velocity along it
-    coming: bool  # the ball comes to the kicker (faster than min_approach_vel)
+    approach_vel: float  # [m/s] the ball's speed towards the kicker centre
+    coming: bool  # the ball comes to the kicker (update_coming; ball_line: faster than min_approach_vel)
     miss: aux.Point  # [m] from the path to the kicker centre, across the path
     time_left: float  # [s] until the ball comes to the kicker
     mode: str = ""  # set by align_with_ball_path: "align", "freeze"; "hold" by hold_after_coming
-
-
-def vision_ball_vel_ok(vel: aux.Point, fit: Optional[tuple[aux.Point, aux.Point, float]]) -> bool:
-    """The SSL vision ball velocity (robot frame) is not a glitch: not faster than BALL_MAX_VEL and, when the
-    camera frames give a direction, not more than BALL_DIR_TOL_DEG off it."""
-    if vel.mag() > config.BALL_MAX_VEL:
-        return False
-    if fit is None or fit[1].mag() < tuning.min_approach_vel or vel.mag() == 0:
-        return True
-    cos = aux.scal_mult(vel.unity(), fit[1].unity())
-    return cos >= math.cos(math.radians(config.BALL_DIR_TOL_DEG))
 
 
 def ball_line(path: BallPath, robot: Optional[Robot], vision_ball: Ball) -> Optional[BallLine]:
@@ -179,20 +168,20 @@ def ball_line(path: BallPath, robot: Optional[Robot], vision_ball: Ball) -> Opti
     The point of the path: the latest camera frame within CAM_TRUST_DIST (the camera is accurate only near the
     robot), else the SSL vision ball in the robot frame (by the robot's vision pose), else the camera frame.
     The direction: the SSL vision ball velocity, on the field (the robot's own motion doesn't tilt it) and
-    filtered along the whole path. Without it (vision lost the ball or the robot, or a glitch: see
-    vision_ball_vel_ok) the line through the camera frames, which needs BALL_PATH_MIN_FRAMES of them."""
-    cam = path.last()
-    fit = path.fit()
+    filtered along the whole path. Without it (vision lost the ball or the robot, or a glitch: faster than
+    BALL_MAX_VEL) the line through the camera frames, which needs BALL_PATH_MIN_FRAMES of them."""
+    cam = path.last(robot)
     vis_point = vis_vel = None
     if robot is not None and vision_ball.is_visible(config.VISION_TIMEOUT_S):
         vis_point = aux.rotate(vision_ball.pos - robot.pos, -robot.ang)
         if vis_point.x <= tuning.kicker_face_x or vis_point.mag() > config.CAM_MAX_DIST:
             vis_point = None  # beside or behind the kicker, or out of the camera's range
         vis_vel = aux.rotate(vision_ball.vel, -robot.ang)
-        if not vision_ball_vel_ok(vis_vel, fit):
+        if vis_vel.mag() > config.BALL_MAX_VEL:
             vis_vel = None
 
     if vis_vel is None:
+        fit = path.fit(robot)
         if fit is None:
             return None
         point, vel, t = fit
@@ -206,11 +195,12 @@ def ball_line(path: BallPath, robot: Optional[Robot], vision_ball: Ball) -> Opti
         else:
             return None
     to_kicker = aux.Point(tuning.kicker_face_x, 0) - point
-    coming = to_kicker.mag() > 0 and aux.scal_mult(vel, to_kicker.unity()) >= tuning.min_approach_vel
+    approach_vel = aux.scal_mult(vel, to_kicker.unity()) if to_kicker.mag() > 0 else 0.0
     direction = vel.unity()
     along = aux.scal_mult(to_kicker, direction)
     time_left = along / vel.mag() - (monotonic() - t) if vel.mag() > 0 else float("inf")
-    return BallLine(source, point, vel, coming, to_kicker - direction * along, time_left)
+    coming = approach_vel >= tuning.min_approach_vel
+    return BallLine(source, point, vel, approach_vel, coming, to_kicker - direction * along, time_left)
 
 
 def robot_frame_vel(robot: Optional[Robot]) -> aux.Point:
@@ -218,36 +208,69 @@ def robot_frame_vel(robot: Optional[Robot]) -> aux.Point:
     return aux.rotate(robot.vel, -robot.ang) if robot is not None else aux.Point(0, 0)
 
 
+def predicted_miss(line: BallLine, robot_vel: aux.Point) -> aux.Point:
+    """The miss ROBOT_RESPONSE_S ahead: the robot keeps its current speed robot_vel (robot frame) that long."""
+    direction = line.vel.unity()
+    vel_across = robot_vel - direction * aux.scal_mult(robot_vel, direction)
+    return line.miss + vel_across * config.ROBOT_RESPONSE_S
+
+
+def reach(t: float) -> float:
+    """How far [m] the robot drives across the ball path in t [s] from standstill (ROBOT_ACCEL, then
+    onboard_max_vel)."""
+    if t <= 0:
+        return 0.0
+    t_acc = tuning.onboard_max_vel / config.ROBOT_ACCEL
+    if t <= t_acc:
+        return config.ROBOT_ACCEL * t * t / 2
+    return config.ROBOT_ACCEL * t_acc * t_acc / 2 + tuning.onboard_max_vel * (t - t_acc)
+
+
+# monotonic() when a ball last came to the kicker (update_coming)
+_last_coming = float("-inf")
+
+
+def update_coming(line: BallLine, robot_vel: aux.Point) -> None:
+    """Whether the ball comes to the kicker (line.coming), with hysteresis. A new approach: faster than
+    min_approach_vel towards the kicker and the robot can still get the kicker centre near the path (reach from
+    ROBOT_RESPONSE_S on, up to ALIGN_REACH_MARGIN short). Within COMING_HOLD_S of the last coming tick:
+    COMING_EXIT_FACTOR of the speed is enough, without the reach check."""
+    global _last_coming
+    now = monotonic()
+    if now - _last_coming <= config.COMING_HOLD_S:
+        line.coming = line.approach_vel >= tuning.min_approach_vel * config.COMING_EXIT_FACTOR
+    else:
+        reachable = predicted_miss(line, robot_vel).mag() <= (
+            reach(line.time_left - config.ROBOT_RESPONSE_S) + config.ALIGN_REACH_MARGIN
+        )
+        line.coming = line.approach_vel >= tuning.min_approach_vel and reachable
+    if line.coming:
+        _last_coming = now
+
+
 def align_with_ball_path(line: BallLine, robot_vel: aux.Point, min_gain: float, uart_command: UartCommand) -> None:
     """Moves only across the ball path, so the kicker centre gets onto it by the time the ball comes.
 
     The robot follows a command ROBOT_RESPONSE_S late, meanwhile it keeps its current speed robot_vel (robot
     frame): the miss is predicted that far ahead and closed by freeze_s + ROBOT_RESPONSE_S before the ball.
-    Later it doesn't move (a command then would act only after the ball, it only shakes the robot)."""
-    direction = line.vel.unity()
-    vel_across = robot_vel - direction * aux.scal_mult(robot_vel, direction)
-    miss = line.miss + vel_across * config.ROBOT_RESPONSE_S
+    Later it doesn't move (a command then would act only after the ball, it only shakes the robot). The gain
+    grows towards the ball from min_gain up to RICOCHET_MAX_GAIN."""
+    miss = predicted_miss(line, robot_vel)
     time_to_close = line.time_left - config.ROBOT_RESPONSE_S - tuning.freeze_s
     if time_to_close < 0:
         vel = aux.Point(0, 0)
         line.mode = "freeze"
     else:
-        gain = max(min_gain, 1 / (time_to_close + 1 / config.CMD_RATE_HZ))
+        gain = max(min_gain, min(config.RICOCHET_MAX_GAIN, 1 / (time_to_close + 1 / config.CMD_RATE_HZ)))
         vel = -miss * gain
         line.mode = "align"
     uart_command.vel_x, uart_command.vel_y = vel.x, vel.y
 
 
-# monotonic() when a ball last came to the kicker (hold_after_coming)
-_last_coming = float("-inf")
-
-
 def hold_after_coming(line: Optional[BallLine], uart_command: UartCommand) -> bool:
     """Right after the ball stopped "coming" (lost for a frame, a vision glitch) the robot stands still for
     COMING_HOLD_S rather than driving off to the target. True when it holds."""
-    global _last_coming
     if line is not None and line.coming:
-        _last_coming = monotonic()
         return False
     if monotonic() - _last_coming > config.COMING_HOLD_S:
         return False
@@ -255,6 +278,39 @@ def hold_after_coming(line: Optional[BallLine], uart_command: UartCommand) -> bo
     if line is not None:
         line.mode = "hold"
     return True
+
+
+class ModeSwitchLimiter:
+    """After a switch of the RICOCHET/CATCH_BALL mode (BallLine.mode, "hold", "" for the command's own motion)
+    the speed command changes by at most MODE_SWITCH_ACCEL until it catches up with the new mode's."""
+
+    def __init__(self) -> None:
+        self._mode: Optional[str] = None
+        self._limiting = False
+        self._vel = aux.Point(0, 0)
+        self._last_call = float("-inf")
+
+    def apply(self, mode: str, uart_command: UartCommand) -> None:
+        now = monotonic()
+        if now - self._last_call > 2 / config.CMD_RATE_HZ:  # another command ran meanwhile: start afresh
+            self._mode, self._limiting = None, False
+        self._last_call = now
+        if self._mode is not None and mode != self._mode:
+            self._limiting = True
+        self._mode = mode
+        vel = aux.Point(uart_command.vel_x, uart_command.vel_y)
+        if self._limiting:
+            step = config.MODE_SWITCH_ACCEL / config.CMD_RATE_HZ
+            change = vel - self._vel
+            if change.mag() > step:
+                vel = self._vel + change.unity() * step
+            else:
+                self._limiting = False
+        self._vel = vel
+        uart_command.vel_x, uart_command.vel_y = vel.x, vel.y
+
+
+_mode_switch = ModeSwitchLimiter()
 
 
 def ricochet(
@@ -274,10 +330,14 @@ def ricochet(
     else:
         hold_heading(uart_command)
     line = ball_line(ball_path, robot, vision_ball)
-    if line is not None and line.coming:
-        align_with_ball_path(line, robot_frame_vel(robot), tuning.ricochet_gain, uart_command)
-    hold_after_coming(line, uart_command)
+    robot_vel = robot_frame_vel(robot)
+    if line is not None:
+        update_coming(line, robot_vel)
+        if line.coming:
+            align_with_ball_path(line, robot_vel, tuning.ricochet_gain, uart_command)
+    held = hold_after_coming(line, uart_command)
     limit_speed(uart_command)
+    _mode_switch.apply("hold" if held else line.mode if line is not None else "", uart_command)
     if cmd.HasField("kicker_and_dribbler"):
         apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
     return line
@@ -300,11 +360,18 @@ def catch_ball(
     else:
         hold_heading(uart_command)
     line = ball_line(ball_path, robot, vision_ball)
+    robot_vel = robot_frame_vel(robot)
+    if line is not None:
+        update_coming(line, robot_vel)
+    held = False
     if line is not None and line.coming:
-        align_with_ball_path(line, robot_frame_vel(robot), tuning.catch_gain, uart_command)
-    elif not hold_after_coming(line, uart_command):
-        follow_ball(ball, uart_command)
+        align_with_ball_path(line, robot_vel, tuning.catch_gain, uart_command)
+    else:
+        held = hold_after_coming(line, uart_command)
+        if not held:
+            follow_ball(ball, uart_command)
     limit_speed(uart_command)
+    _mode_switch.apply("hold" if held else line.mode if line is not None else "", uart_command)
     apply_kicker_and_dribbler(cmd.kicker_and_dribbler, uart_command)
     return line
 
@@ -371,7 +438,10 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
     current_id = None
     period = 1 / config.CMD_RATE_HZ
     ball_path = BallPath()
-    robot_vel = aux.Point(0, 0)  # commanded at the last tick
+    # the robot's estimated speed (robot frame) for BallPath without its vision pose: the command through a lag
+    # of time constant ROBOT_RESPONSE_S
+    robot_vel = aux.Point(0, 0)
+    lag = min(1.0, period / config.ROBOT_RESPONSE_S)
     log = RicochetLog()
     coefficients = CoefficientStore()
     coefficients_crc.value = coefficients.crc()
@@ -397,14 +467,14 @@ def command_receiver(client: VisionClient, ball_detector: BallDetector, robot_id
                 ser.write(frame)  # the firmware logs only changes
             next_settings = monotonic() + config.SETTINGS_RESEND_S
         new_frame = ball_detector.update()
-        ball_path.update(ball_detector.r_pos, new_frame, robot_vel)
         seen_robot = robot if robot.is_visible(config.VISION_TIMEOUT_S) else None
+        ball_path.update(ball_detector.r_pos, new_frame, seen_robot, robot_vel)
         cmd = receiver.current_command()
         uart_command, target_reached, line = build_uart_command(
             cmd, seen_robot, ball_detector.r_pos, ball_path, field.ball
         )
         log.write(cmd, seen_robot, field.ball, ball_detector, new_frame, ball_path, line, uart_command)
-        robot_vel = aux.Point(uart_command.vel_x, uart_command.vel_y)
+        robot_vel = robot_vel + (aux.Point(uart_command.vel_x, uart_command.vel_y) - robot_vel) * lag
         if target_reached:
             receiver.last_cmd = control_pb2.RobotCommand()
         uart_command.robot_id = current_id
