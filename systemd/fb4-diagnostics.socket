@@ -1,0 +1,10 @@
+[Unit]
+Description=FB4 diagnostics socket
+
+[Socket]
+ListenStream=127.0.0.1:5560
+Accept=yes
+MaxConnections=12
+
+[Install]
+WantedBy=sockets.target

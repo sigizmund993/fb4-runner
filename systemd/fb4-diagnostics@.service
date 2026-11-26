@@ -1,0 +1,13 @@
+[Unit]
+Description=FB4 diagnostics session
+
+[Service]
+User=fb4-diagnostics
+ExecStart=/usr/bin/python3 /usr/local/libexec/fb4-diagnostics/diagnostic_http.py
+EnvironmentFile=-/etc/default/fb4-diagnostics
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict

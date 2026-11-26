@@ -54,7 +54,9 @@ cleanup() {
     [ -n "$MEDIAMTX_PID" ] && kill "$MEDIAMTX_PID" 2>/dev/null
     wait "$MEDIAMTX_PID" 2>/dev/null
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 PREFIX=""
 
@@ -78,7 +80,7 @@ queue leaky=downstream max-size-buffers=2 ! \
 sink."
 else
     SINK="fakesink sync=false"
-    echo "[INFO] No-stream mode — console only"
+    echo "[INFO] Video preview available on demand"
 fi
 
 echo "[INFO] HEF:     $HEF"
@@ -87,8 +89,7 @@ echo "[INFO] Quality: $QUALITY"
 echo "[INFO] Camera:  exposure ${CAM_EXPOSURE_US} us, gain ${CAM_GAIN}"
 echo ""
 
-gst-launch-1.0 -e $PREFIX \
-libcamerasrc $CAM_CONTROLS ! \
+PIPELINE=(libcamerasrc $CAM_CONTROLS ! \
 "video/x-raw,format=NV12,width=1280,height=960,framerate=30/1" ! \
 videoconvert n-threads=2 ! \
 "video/x-raw,format=RGB" ! \
@@ -100,6 +101,14 @@ scheduling-algorithm=1 ! \
 queue leaky=upstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! \
 hailofilter \
 so-path="$SO" \
-qos=false ! \
-$SINK
+qos=false)
+
+if [ "$STREAM" -eq 0 ]; then
+    if /usr/bin/python3 "$(dirname "$(readlink -f "$0")")/src/diagnostic_camera.py" "${PIPELINE[@]}"; then
+        exit 0
+    fi
+    echo "[WARN] Preview unavailable; starting the detector without video" >&2
+fi
+
+gst-launch-1.0 -e $PREFIX "${PIPELINE[@]}" ! $SINK
 

@@ -1,17 +1,19 @@
 import socket
 import subprocess
-from time import monotonic
+from time import monotonic, time
 from typing import Optional
 
 import serial
 
 import config
 from ball_detector import BallDetector
+from diagnostic_telemetry import start_telemetry_stream
 from protocol.uart import TEL_FMT, FrameParser, Telemetry
 from ssl_packet_package.protopy.spbunited.robot import telemetry_pb2
 from utils.auxiliary import aux
 from utils.change_hostname import change_hostname
 
+DIAGNOSTIC_STATUS_MAX_AGE_S = 3.0
 RPI_STATUS_PERIOD_S = 1.0
 
 
@@ -62,6 +64,9 @@ class TelemetryTransceiver:
         self.coefficients_crc = coefficients_crc
         self.parser = FrameParser(TEL_FMT)
         self.last_rpi_status = float("-inf")
+        self.last_rpi_temp = None
+        self.last_coefficients_crc = None
+        self.diagnostics = start_telemetry_stream()
         self.id_mismatch: Optional[tuple[int, float]] = None  # (MCU id, since)
         self.send_failing = False
 
@@ -94,11 +99,23 @@ class TelemetryTransceiver:
             if monotonic() - self.last_rpi_status > RPI_STATUS_PERIOD_S:
                 rpi_temp = get_rpi_temp_c()
                 coefficients_crc = self.coefficients_crc.value
+                self.last_rpi_temp = rpi_temp
+                self.last_coefficients_crc = coefficients_crc
                 self.last_rpi_status = monotonic()
             packet = build_telemetry_packet(
                 self.robot_id.value, tel, self.ball_detector.r_pos, rpi_temp, coefficients_crc
             )
             self.send(packet.SerializeToString())
+            if self.diagnostics is not None and self.diagnostics.active:
+                sampled_at = monotonic()
+                # Some firmware versions send a separate STM32 status frame.
+                recent_status = getattr(self, "stm_status", None)
+                if recent_status is not None and sampled_at - self.stm_status_time > DIAGNOSTIC_STATUS_MAX_AGE_S:
+                    recent_status = None
+                self.diagnostics.publish((
+                    packet.robot_id, sampled_at, time(), tel, self.last_rpi_temp, self.last_coefficients_crc,
+                    recent_status, self.ball_detector.p_pos, self.ball_detector.r_pos,
+                ))
 
     def send(self, data: bytes) -> None:
         # The runner starts before Wi-Fi is up: until then there is no route for the broadcast
